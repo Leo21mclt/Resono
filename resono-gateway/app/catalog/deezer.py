@@ -1,4 +1,4 @@
-﻿import httpx
+import httpx
 import logging
 from typing import Any
 from app.catalog.models import CatalogSearchResult, CatalogArtist, CatalogAlbum, CatalogTrack
@@ -111,43 +111,79 @@ class DeezerProvider(CatalogProvider):
             logger.error(f"Deezer get_artist failed for '{artist_id}': {e}")
             return None
 
-    async def get_artist_top_tracks(self, artist_id: str, limit: int = 10) -> list[CatalogTrack]:
-        raw_id = artist_id.replace("deezer:artist:", "")
+    async def search_artists(self, query: str, limit: int = 10) -> list[CatalogArtist]:
         try:
             async with self._get_client() as client:
-                res = await client.get(f"/artist/{raw_id}/top", params={"limit": limit})
+                res = await client.get("/search/artist", params={"q": query, "limit": limit})
+                res.raise_for_status()
+                data = res.json()
+            items = data.get("data", [])
+            artists = []
+            for a in items:
+                pic = a.get("picture_xl") or a.get("picture_big") or a.get("picture_medium")
+                artists.append(CatalogArtist(
+                    id=f"deezer:artist:{a.get('id')}",
+                    name=a.get("name", "Unknown Artist"),
+                    artwork_url=pic
+                ))
+            return artists
+        except Exception as e:
+            logger.error(f"Deezer search_artists failed for '{query}': {e}")
+            return []
+
+    async def _resolve_artist_id(self, artist_id: str, name: str | None = None) -> str | None:
+        clean = artist_id.replace("deezer:artist:", "").strip()
+        if clean.isdigit():
+            return clean
+        query = name or (clean.split(":")[-1] if ":" in clean else clean)
+        try:
+            async with self._get_client() as client:
+                res = await client.get("/search/artist", params={"q": query, "limit": 1})
+                if res.is_success:
+                    items = res.json().get("data", [])
+                    if items:
+                        return str(items[0]["id"])
+        except Exception:
+            pass
+        return None
+
+    async def get_artist_top_tracks(self, artist_id: str, name: str | None = None, limit: int = 10) -> list[CatalogTrack]:
+        resolved_id = await self._resolve_artist_id(artist_id, name)
+        if not resolved_id:
+            return []
+        try:
+            async with self._get_client() as client:
+                res = await client.get(f"/artist/{resolved_id}/top", params={"limit": limit})
                 res.raise_for_status()
                 data = res.json()
             items = data.get("data", [])
             tracks: list[CatalogTrack] = []
             for it in items:
-                art_data = it.get("artist", {})
-                alb_data = it.get("album", {})
-                cover = alb_data.get("cover_xl") or alb_data.get("cover_big")
+                al = it.get("album", {})
+                cover = al.get("cover_xl") or al.get("cover_big")
                 tracks.append(CatalogTrack(
                     id=f"deezer:track:{it.get('id')}",
-                    title=it.get("title", ""),
-                    artist_name=art_data.get("name", "Unknown Artist"),
-                    artist_id=f"deezer:artist:{art_data.get('id', raw_id)}",
-                    album_title=alb_data.get("title", "Unknown Album"),
-                    album_id=f"deezer:album:{alb_data.get('id', '')}",
+                    title=it.get("title", "Unknown Track"),
+                    artist_name=it.get("artist", {}).get("name", ""),
+                    artist_id=f"deezer:artist:{resolved_id}",
+                    album_title=al.get("title"),
+                    album_id=f"deezer:album:{al.get('id')}" if al.get("id") else None,
                     duration_ms=it.get("duration", 0) * 1000,
-                    disc_number=it.get("disk_number", 1),
                     track_number=it.get("track_position", 1),
-                    isrc=it.get("isrc"),
-                    artwork_url=cover,
-                    explicit=bool(it.get("explicit_lyrics", False))
+                    artwork_url=cover
                 ))
             return tracks
         except Exception as e:
             logger.error(f"Deezer get_artist_top_tracks failed for '{artist_id}': {e}")
             return []
 
-    async def get_artist_albums(self, artist_id: str, limit: int = 50) -> list[CatalogAlbum]:
-        raw_id = artist_id.replace("deezer:artist:", "")
+    async def get_artist_albums(self, artist_id: str, name: str | None = None, limit: int = 50) -> list[CatalogAlbum]:
+        resolved_id = await self._resolve_artist_id(artist_id, name)
+        if not resolved_id:
+            return []
         try:
             async with self._get_client() as client:
-                res = await client.get(f"/artist/{raw_id}/albums", params={"limit": limit})
+                res = await client.get(f"/artist/{resolved_id}/albums", params={"limit": limit})
                 res.raise_for_status()
                 data = res.json()
             items = data.get("data", [])
@@ -158,7 +194,7 @@ class DeezerProvider(CatalogProvider):
                     id=f"deezer:album:{it.get('id')}",
                     title=it.get("title", "Unknown Album"),
                     artist_name=it.get("artist", {}).get("name", ""),
-                    artist_id=f"deezer:artist:{raw_id}",
+                    artist_id=f"deezer:artist:{resolved_id}",
                     release_date=it.get("release_date"),
                     total_tracks=it.get("nb_tracks", 1),
                     artwork_url=cover
@@ -168,11 +204,13 @@ class DeezerProvider(CatalogProvider):
             logger.error(f"Deezer get_artist_albums failed for '{artist_id}': {e}")
             return []
 
-    async def get_artist_related(self, artist_id: str, limit: int = 10) -> list[CatalogArtist]:
-        raw_id = artist_id.replace("deezer:artist:", "")
+    async def get_artist_related(self, artist_id: str, name: str | None = None, limit: int = 10) -> list[CatalogArtist]:
+        resolved_id = await self._resolve_artist_id(artist_id, name)
+        if not resolved_id:
+            return []
         try:
             async with self._get_client() as client:
-                res = await client.get(f"/artist/{raw_id}/related", params={"limit": limit})
+                res = await client.get(f"/artist/{resolved_id}/related", params={"limit": limit})
                 res.raise_for_status()
                 data = res.json()
             items = data.get("data", [])

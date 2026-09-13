@@ -400,7 +400,7 @@ namespace Resono.Plugin.Filters
                 Container = "flac",
                 SupportsTranscoding = true,
                 SupportsDirectStream = true,
-                SupportsDirectPlay = true,
+                SupportsDirectPlay = false,
                 RunTimeTicks = e.DurationMs.HasValue ? (long)e.DurationMs.Value * 10000 : null,
                 MediaStreams = new List<MediaBrowser.Model.Entities.MediaStream>(),
                 RequiredHttpHeaders = new Dictionary<string, string>(),

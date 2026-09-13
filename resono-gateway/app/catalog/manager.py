@@ -72,6 +72,15 @@ class CatalogManager:
             logger.info(f"Searching via primary catalog provider ({primary.name}) for '{clean_query}'...")
             res = await primary.search(clean_query, limit=limit)
             if res.tracks or res.albums or res.artists:
+                # Enrich artists with real HD portraits from Deezer
+                try:
+                    dz = self.providers["deezer"]
+                    if hasattr(dz, "search_artists"):
+                        real_artists = await dz.search_artists(clean_query, limit=10)
+                        if real_artists:
+                            res.artists = real_artists
+                except Exception:
+                    pass
                 self._cache[cache_key] = (now + self._cache_ttl_sec, res)
                 return res
             logger.info(f"Primary provider ({primary.name}) returned 0 results, trying fallback...")
@@ -143,26 +152,26 @@ class CatalogManager:
                 return res
         return None
 
-    async def get_artist_top_tracks(self, artist_id: str, limit: int = 10) -> list[CatalogTrack]:
+    async def get_artist_top_tracks(self, artist_id: str, name: str | None = None, limit: int = 10) -> list[CatalogTrack]:
         deezer = self.providers["deezer"]
         if hasattr(deezer, "get_artist_top_tracks"):
-            res = await deezer.get_artist_top_tracks(artist_id, limit=limit)
+            res = await deezer.get_artist_top_tracks(artist_id, name=name, limit=limit)
             if res:
                 return res
         return []
 
-    async def get_artist_albums(self, artist_id: str, limit: int = 50) -> list[CatalogAlbum]:
+    async def get_artist_albums(self, artist_id: str, name: str | None = None, limit: int = 50) -> list[CatalogAlbum]:
         deezer = self.providers["deezer"]
         if hasattr(deezer, "get_artist_albums"):
-            res = await deezer.get_artist_albums(artist_id, limit=limit)
+            res = await deezer.get_artist_albums(artist_id, name=name, limit=limit)
             if res:
                 return res
         return []
 
-    async def get_artist_related(self, artist_id: str, limit: int = 10) -> list[CatalogArtist]:
+    async def get_artist_related(self, artist_id: str, name: str | None = None, limit: int = 10) -> list[CatalogArtist]:
         deezer = self.providers["deezer"]
         if hasattr(deezer, "get_artist_related"):
-            return await deezer.get_artist_related(artist_id, limit=limit)
+            return await deezer.get_artist_related(artist_id, name=name, limit=limit)
         return []
 
     async def get_chart_tracks(self, chart_type: str = "global", limit: int = 50) -> list[CatalogTrack]:

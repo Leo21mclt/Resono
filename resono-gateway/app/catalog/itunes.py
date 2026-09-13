@@ -57,7 +57,7 @@ class ITunesProvider(CatalogProvider):
                     artists_map[artist_id] = CatalogArtist(
                         id=f"itunes:artist:{artist_id}",
                         name=artist_name,
-                        artwork_url=art,
+                        artwork_url=None,
                         genres=[item.get("primaryGenreName")] if item.get("primaryGenreName") else []
                     )
 

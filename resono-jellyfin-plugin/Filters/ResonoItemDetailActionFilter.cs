@@ -235,7 +235,8 @@ namespace Resono.Plugin.Filters
                 bool isPlaylistsQuery = types.Contains("Playlist") || path.IndexOf("/Playlists", StringComparison.OrdinalIgnoreCase) >= 0;
                 bool isSuggestionsQuery = path.IndexOf("/Suggestions", StringComparison.OrdinalIgnoreCase) >= 0;
 
-                if (isPlaylistsQuery || isSuggestionsQuery)
+                bool hasSearchTerm = req.Query.ContainsKey("searchTerm") || req.Query.ContainsKey("SearchTerm") || req.Query.ContainsKey("nameStartsWithOrGreater");
+                if (!hasSearchTerm && (isPlaylistsQuery || isSuggestionsQuery))
                 {
                     try
                     {
@@ -385,7 +386,7 @@ namespace Resono.Plugin.Filters
                 var cfg = Plugin.Instance!.Configuration;
                 var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var idParam = !string.IsNullOrEmpty(artistEntry.SpotifyId) ? artistEntry.SpotifyId : artistEntry.Name;
-                var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam)}/albums";
+                var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam)}/albums?name={Uri.EscapeDataString(artistEntry.Name ?? "")}";
 
                 var client = _httpClientFactory.CreateClient();
                 var res = await client.GetFromJsonAsync<GatewayArtistAlbumsResponse>(url, ct).ConfigureAwait(false);
@@ -527,7 +528,7 @@ namespace Resono.Plugin.Filters
                 var cfg = Plugin.Instance!.Configuration;
                 var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var idParam = !string.IsNullOrEmpty(artistEntry.SpotifyId) ? artistEntry.SpotifyId : artistEntry.Name;
-                var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam ?? "")}/similar";
+                var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam ?? "")}/similar?name={Uri.EscapeDataString(artistEntry.Name ?? "")}";
 
                 var client = _httpClientFactory.CreateClient();
                 var res = await client.GetFromJsonAsync<GatewayArtistSimilarResponse>(url, ct).ConfigureAwait(false);

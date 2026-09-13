@@ -3,7 +3,8 @@ from typing import Any
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -136,6 +137,32 @@ async def stream_query(
     track = search_res.tracks[0]
     await catalog_manager.sync_track_to_db(track, db)
     canonical = catalog_manager.to_canonical_track(track)
+    # 1. Check local on-disk audio cache
+    cached = cache_manager.find_cached_file(canonical.canonical_id)
+    if cached:
+        logger.info(f"[PLAYBACK] Cache hit for '{track.title}'")
+        return get_audio_file_response(cached)
+
+    # 2. Instant live playback via ytmusic-stream-server
+    ytmusic_url = getattr(settings, "YTMUSIC_STREAM_URL", "http://ytmusic-stream-server:8081").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=False) as client:
+            res = await client.get(
+                f"{ytmusic_url}/stream",
+                params={"artist": track.artist_name, "title": track.title}
+            )
+            if res.status_code in (301, 302, 303, 307, 308):
+                cdn_url = res.headers.get("Location")
+                if cdn_url:
+                    logger.info(f"[PLAYBACK] Instant stream redirect for '{track.title}' -> CDN")
+                    # Background acquisition for persistent offline cache
+                    import asyncio
+                    asyncio.create_task(acquisition_manager.acquire_track_audio(canonical, db))
+                    return RedirectResponse(url=cdn_url, status_code=302)
+    except Exception as e:
+        logger.warning(f"[PLAYBACK] ytmusic-stream-server unavailable ({e}), falling back to Soulseek...")
+
+    # 3. Fallback: Soulseek acquisition
     try:
         audio_file = await acquisition_manager.acquire_track_audio(canonical, db)
         return get_audio_file_response(audio_file)
@@ -161,6 +188,32 @@ async def stream_track(track_id: str, db: AsyncSession = Depends(get_db)):
     await catalog_manager.sync_track_to_db(track, db)
     canonical = catalog_manager.to_canonical_track(track)
 
+    # 1. Check local on-disk audio cache
+    cached = cache_manager.find_cached_file(canonical.canonical_id)
+    if cached:
+        logger.info(f"[PLAYBACK] Cache hit for '{track.title}'")
+        return get_audio_file_response(cached)
+
+    # 2. Instant live playback via ytmusic-stream-server
+    ytmusic_url = getattr(settings, "YTMUSIC_STREAM_URL", "http://ytmusic-stream-server:8081").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=False) as client:
+            res = await client.get(
+                f"{ytmusic_url}/stream",
+                params={"artist": track.artist_name, "title": track.title}
+            )
+            if res.status_code in (301, 302, 303, 307, 308):
+                cdn_url = res.headers.get("Location")
+                if cdn_url:
+                    logger.info(f"[PLAYBACK] Instant stream redirect for '{track.title}' -> CDN")
+                    # Background acquisition for persistent offline cache
+                    import asyncio
+                    asyncio.create_task(acquisition_manager.acquire_track_audio(canonical, db))
+                    return RedirectResponse(url=cdn_url, status_code=302)
+    except Exception as e:
+        logger.warning(f"[PLAYBACK] ytmusic-stream-server unavailable ({e}), falling back to Soulseek...")
+
+    # 3. Fallback: Soulseek acquisition
     try:
         audio_file = await acquisition_manager.acquire_track_audio(canonical, db)
         return get_audio_file_response(audio_file)
@@ -348,9 +401,9 @@ async def jellyfin_playback_telemetry(payload: dict[str, Any], db: AsyncSession 
     return {"status": "acknowledged"}
 
 @app.get("/jellyfin/artist/{artist_id:path}/top")
-async def jellyfin_artist_top_tracks(artist_id: str, limit: int = Query(10, ge=1, le=50)):
+async def jellyfin_artist_top_tracks(artist_id: str, name: str | None = Query(None), limit: int = Query(10, ge=1, le=50)):
     """Deliver top tracks for an artist."""
-    tracks = await catalog_manager.get_artist_top_tracks(artist_id, limit=limit)
+    tracks = await catalog_manager.get_artist_top_tracks(artist_id, name=name, limit=limit)
     return {
         "tracks": [
             {
@@ -370,9 +423,9 @@ async def jellyfin_artist_top_tracks(artist_id: str, limit: int = Query(10, ge=1
     }
 
 @app.get("/jellyfin/artist/{artist_id:path}/albums")
-async def jellyfin_artist_albums(artist_id: str, limit: int = Query(50, ge=1, le=100)):
+async def jellyfin_artist_albums(artist_id: str, name: str | None = Query(None), limit: int = Query(50, ge=1, le=100)):
     """Deliver discography albums for an artist."""
-    albums = await catalog_manager.get_artist_albums(artist_id, limit=limit)
+    albums = await catalog_manager.get_artist_albums(artist_id, name=name, limit=limit)
     return {
         "albums": [
             {
@@ -388,9 +441,9 @@ async def jellyfin_artist_albums(artist_id: str, limit: int = Query(50, ge=1, le
     }
 
 @app.get("/jellyfin/artist/{artist_id:path}/similar")
-async def jellyfin_artist_similar(artist_id: str, limit: int = Query(10, ge=1, le=30)):
+async def jellyfin_artist_similar(artist_id: str, name: str | None = Query(None), limit: int = Query(10, ge=1, le=30)):
     """Deliver similar artists."""
-    artists = await catalog_manager.get_artist_related(artist_id, limit=limit)
+    artists = await catalog_manager.get_artist_related(artist_id, name=name, limit=limit)
     return {
         "artists": [
             {
@@ -411,19 +464,19 @@ async def jellyfin_get_charts(country: str = Query("PE")):
                 "id": "global",
                 "name": "Top 50 Global",
                 "description": "The most played tracks in the world right now.",
-                "imageUrl": "https://e-cdns-images.dzcdn.net/images/playlist/1afd90d72ffbcb336d228e57300a9130/500x500-000000-80-0-0.jpg"
+                "imageUrl": "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500&h=500&fit=crop"
             },
             {
                 "id": country.upper(),
                 "name": f"Top 50 {country.upper()}",
                 "description": f"The hottest tracks trending in {country.upper()} today.",
-                "imageUrl": "https://e-cdns-images.dzcdn.net/images/playlist/854e1a7beebfb6a9331b56680f4a14ef/500x500-000000-80-0-0.jpg"
+                "imageUrl": "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=500&h=500&fit=crop"
             },
             {
                 "id": "trending",
                 "name": "Trending & Discover",
                 "description": "Weekly trending fresh discoveries.",
-                "imageUrl": "https://e-cdns-images.dzcdn.net/images/playlist/3c19a82aeffd2f6f6adb63c4d8548e06/500x500-000000-80-0-0.jpg"
+                "imageUrl": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&h=500&fit=crop"
             }
         ]
     }

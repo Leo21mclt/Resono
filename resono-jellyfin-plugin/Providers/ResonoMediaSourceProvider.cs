@@ -57,7 +57,7 @@ namespace Resono.Plugin.Providers
                         Path = streamUrl,
                         Protocol = MediaProtocol.Http,
                         Container = "mp3",
-                        SupportsDirectPlay = true,
+                        SupportsDirectPlay = false,
                         SupportsDirectStream = true,
                         SupportsTranscoding = true,
                         IsInfiniteStream = false,
