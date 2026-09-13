@@ -180,19 +180,22 @@ class DeezerProvider(CatalogProvider):
             return []
 
     async def _resolve_artist_id(self, artist_id: str, name: str | None = None) -> str | None:
-        clean = artist_id.replace("deezer:artist:", "").strip()
+        if artist_id.startswith("deezer:artist:"):
+            return artist_id.replace("deezer:artist:", "").strip()
+        if name and name.strip():
+            clean_name = name.strip()
+            try:
+                async with self._get_client() as client:
+                    res = await client.get("/search/artist", params={"q": clean_name, "limit": 1})
+                    if res.is_success:
+                        items = res.json().get("data", [])
+                        if items:
+                            return str(items[0]["id"])
+            except Exception:
+                pass
+        clean = artist_id.replace("itunes:artist:", "").replace("spotify:artist:", "").strip()
         if clean.isdigit():
             return clean
-        query = name or (clean.split(":")[-1] if ":" in clean else clean)
-        try:
-            async with self._get_client() as client:
-                res = await client.get("/search/artist", params={"q": query, "limit": 1})
-                if res.is_success:
-                    items = res.json().get("data", [])
-                    if items:
-                        return str(items[0]["id"])
-        except Exception:
-            pass
         return None
 
     async def get_artist_top_tracks(self, artist_id: str, name: str | None = None, limit: int = 10) -> list[CatalogTrack]:
@@ -209,13 +212,15 @@ class DeezerProvider(CatalogProvider):
             for it in items:
                 al = it.get("album", {})
                 cover = al.get("cover_xl") or al.get("cover_big")
+                art_name = it.get("artist", {}).get("name") or name or "Unknown Artist"
+                alb_id = f"deezer:album:{al.get('id')}" if al.get("id") else f"deezer:album:top_{resolved_id}"
                 tracks.append(CatalogTrack(
                     id=f"deezer:track:{it.get('id')}",
                     title=it.get("title", "Unknown Track"),
-                    artist_name=it.get("artist", {}).get("name", ""),
+                    artist_name=art_name,
                     artist_id=f"deezer:artist:{resolved_id}",
-                    album_title=al.get("title"),
-                    album_id=f"deezer:album:{al.get('id')}" if al.get("id") else None,
+                    album_title=al.get("title") or "Top Tracks",
+                    album_id=alb_id,
                     duration_ms=it.get("duration", 0) * 1000,
                     track_number=it.get("track_position", 1),
                     artwork_url=cover
@@ -238,10 +243,11 @@ class DeezerProvider(CatalogProvider):
             albums: list[CatalogAlbum] = []
             for it in items:
                 cover = it.get("cover_xl") or it.get("cover_big")
+                art_name = it.get("artist", {}).get("name") or name or "Unknown Artist"
                 albums.append(CatalogAlbum(
                     id=f"deezer:album:{it.get('id')}",
                     title=it.get("title", "Unknown Album"),
-                    artist_name=it.get("artist", {}).get("name", ""),
+                    artist_name=art_name,
                     artist_id=f"deezer:artist:{resolved_id}",
                     release_date=it.get("release_date"),
                     total_tracks=it.get("nb_tracks", 1),

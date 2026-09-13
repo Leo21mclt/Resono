@@ -24,13 +24,17 @@ class CatalogManager:
     - MusicBrainz (open community encyclopedia)
     """
     def __init__(self):
+        _apple = ITunesProvider()
+        _deezer = DeezerProvider()
+        _spotify = SpotifyProvider()
+        _musicbrainz = MusicBrainzProvider()
         self.providers: dict[str, CatalogProvider] = {
-            "apple": ITunesProvider(),
-            "itunes": ITunesProvider(),
-            "deezer": DeezerProvider(),
-            "spotify": SpotifyProvider(),
-            "musicbrainz": MusicBrainzProvider(),
-            "mb": MusicBrainzProvider(),
+            "apple": _apple,
+            "itunes": _apple,
+            "deezer": _deezer,
+            "spotify": _spotify,
+            "musicbrainz": _musicbrainz,
+            "mb": _musicbrainz,
         }
         self._cache: dict[str, tuple[float, CatalogSearchResult]] = {}
         self._cache_ttl_sec = 600  # 10 minutes
@@ -76,9 +80,27 @@ class CatalogManager:
                 try:
                     dz = self.providers["deezer"]
                     if hasattr(dz, "search_artists"):
-                        real_artists = await dz.search_artists(clean_query, limit=10)
-                        if real_artists:
-                            res.artists = real_artists
+                        query_artists = clean_query
+                        if not res.artists and res.albums:
+                            query_artists = res.albums[0].artist_name
+                        elif not res.artists and res.tracks:
+                            query_artists = res.tracks[0].artist_name
+
+                        dz_artists = await dz.search_artists(query_artists, limit=10)
+                        if dz_artists:
+                            # Build a name→artwork lookup from Deezer HD portraits
+                            dz_art_by_name = {a.name.lower(): a for a in dz_artists}
+                            # Enrich existing artists with HD artwork
+                            for existing in res.artists:
+                                match = dz_art_by_name.get(existing.name.lower())
+                                if match and match.artwork_url:
+                                    existing.artwork_url = match.artwork_url
+                            # Add any Deezer artists not already present
+                            existing_names = {a.name.lower() for a in res.artists}
+                            for dz_a in dz_artists:
+                                if dz_a.name.lower() not in existing_names:
+                                    res.artists.append(dz_a)
+                                    existing_names.add(dz_a.name.lower())
                 except Exception:
                     pass
                 self._cache[cache_key] = (now + self._cache_ttl_sec, res)
@@ -102,21 +124,32 @@ class CatalogManager:
 
     async def get_artist(self, artist_id: str) -> CatalogArtist | None:
         prefix = artist_id.split(":")[0].lower() if ":" in artist_id else ""
+        artist: CatalogArtist | None = None
         if prefix in ("itunes", "apple"):
-            return await self.providers["apple"].get_artist(artist_id)
-        if prefix == "deezer":
-            return await self.providers["deezer"].get_artist(artist_id)
-        if prefix == "spotify":
-            return await self.providers["spotify"].get_artist(artist_id)
-        if prefix in ("mb", "musicbrainz"):
-            return await self.providers["musicbrainz"].get_artist(artist_id)
+            artist = await self.providers["apple"].get_artist(artist_id)
+        elif prefix == "deezer":
+            artist = await self.providers["deezer"].get_artist(artist_id)
+        elif prefix == "spotify":
+            artist = await self.providers["spotify"].get_artist(artist_id)
+        elif prefix in ("mb", "musicbrainz"):
+            artist = await self.providers["musicbrainz"].get_artist(artist_id)
+        else:
+            for prov in (self.providers["apple"], self.providers["deezer"], self.providers["spotify"]):
+                artist = await prov.get_artist(artist_id)
+                if artist:
+                    break
 
-        # Fallback search across providers
-        for prov in (self.providers["apple"], self.providers["deezer"], self.providers["spotify"]):
-            res = await prov.get_artist(artist_id)
-            if res:
-                return res
-        return None
+        if artist and not artist.artwork_url and artist.name:
+            try:
+                dz = self.providers["deezer"]
+                if hasattr(dz, "search_artists"):
+                    dz_artists = await dz.search_artists(artist.name, limit=1)
+                    if dz_artists and dz_artists[0].artwork_url:
+                        artist.artwork_url = dz_artists[0].artwork_url
+            except Exception:
+                pass
+
+        return artist
 
     async def get_album(self, album_id: str) -> tuple[CatalogAlbum, list[CatalogTrack]] | None:
         prefix = album_id.split(":")[0].lower() if ":" in album_id else ""

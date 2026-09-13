@@ -87,7 +87,7 @@ namespace Resono.Plugin.Filters
                             forwardReq.Headers.TryAddWithoutValidation("Range", rangeVal.ToString());
                         }
 
-                        var forwardResp = await client.SendAsync(forwardReq, HttpCompletionOption.ResponseHeadersRead, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        using var forwardResp = await client.SendAsync(forwardReq, HttpCompletionOption.ResponseHeadersRead, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                         var httpResp = ctx.HttpContext.Response;
                         httpResp.StatusCode = (int)forwardResp.StatusCode;
                         httpResp.ContentType = forwardResp.Content.Headers.ContentType?.ToString() ?? "audio/mpeg";
@@ -270,7 +270,9 @@ namespace Resono.Plugin.Filters
                 // (c) Artist Profile queries (/Items?albumArtistIds=..., /Items?artistIds=..., /Items?contributingArtistIds=...)
                 if (TryExtractGuidListFromQuery(req, "albumArtistIds", out var artistIds)
                     || TryExtractGuidListFromQuery(req, "artistIds", out artistIds)
-                    || TryExtractGuidListFromQuery(req, "contributingArtistIds", out artistIds))
+                    || TryExtractGuidListFromQuery(req, "contributingArtistIds", out artistIds)
+                    || TryExtractGuidListFromQuery(req, "albumArtistId", out artistIds)
+                    || TryExtractGuidListFromQuery(req, "artistId", out artistIds))
                 {
                     foreach (var artistGuid in artistIds)
                     {
@@ -279,6 +281,19 @@ namespace Resono.Plugin.Filters
                             var types = ExtractIncludeItemTypes(req);
                             bool wantsAlbum = types.Contains("MusicAlbum");
                             bool wantsAudio = types.Contains("Audio") || (!wantsAlbum && types.Count == 0);
+
+                            if (wantsAlbum && wantsAudio)
+                            {
+                                var albums = await FetchArtistAlbumsAsync(artistEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                                var tracks = await FetchArtistTopTracksAsync(artistEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                                var combined = albums.Concat(tracks).ToArray();
+                                ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
+                                {
+                                    Items = combined,
+                                    TotalRecordCount = combined.Length
+                                });
+                                return;
+                            }
 
                             if (wantsAlbum)
                             {
@@ -493,7 +508,7 @@ namespace Resono.Plugin.Filters
                         {
                             Kind = "album",
                             Name = al.Name,
-                            ArtistName = al.ArtistName ?? artistEntry.Name,
+                            ArtistName = !string.IsNullOrWhiteSpace(al.ArtistName) ? al.ArtistName : artistEntry.Name,
                             SpotifyId = al.Id,
                             ImageUrl = al.ImageUrl,
                             ArtistId = artistEntry.Id
@@ -515,7 +530,7 @@ namespace Resono.Plugin.Filters
                             {
                                 Kind = "album",
                                 Name = al.Name,
-                                ArtistName = al.ArtistName ?? artistEntry.Name,
+                                ArtistName = !string.IsNullOrWhiteSpace(al.ArtistName) ? al.ArtistName : artistEntry.Name,
                                 SpotifyId = al.Id,
                                 ImageUrl = al.ImageUrl,
                                 ArtistId = artistEntry.Id
@@ -560,7 +575,7 @@ namespace Resono.Plugin.Filters
                         {
                             Kind = "track",
                             Name = t.Name,
-                            ArtistName = t.ArtistName ?? artistEntry.Name,
+                            ArtistName = !string.IsNullOrWhiteSpace(t.ArtistName) ? t.ArtistName : artistEntry.Name,
                             AlbumName = t.AlbumName,
                             SpotifyId = t.Id,
                             ImageUrl = t.ImageUrl ?? artistEntry.ImageUrl,
@@ -590,7 +605,7 @@ namespace Resono.Plugin.Filters
                             {
                                 Kind = "track",
                                 Name = t.Name,
-                                ArtistName = t.ArtistName ?? artistEntry.Name,
+                                ArtistName = !string.IsNullOrWhiteSpace(t.ArtistName) ? t.ArtistName : artistEntry.Name,
                                 AlbumName = t.AlbumName,
                                 SpotifyId = t.Id,
                                 ImageUrl = t.ImageUrl ?? artistEntry.ImageUrl,

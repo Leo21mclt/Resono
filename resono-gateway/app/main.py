@@ -2,14 +2,19 @@ import logging
 from typing import Any
 from pathlib import Path
 from contextlib import asynccontextmanager
+import asyncio
 from fastapi import FastAPI, HTTPException, Query, Depends
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.config import settings
 from app.db.database import init_db, get_db
+from app.db.models import CacheEntry
 from app.catalog.manager import catalog_manager
+from app.catalog.models import CatalogTrack
+from app.core.models import deterministic_guid
 from app.core.backend import soulseek_backend
 from app.core.cache import cache_manager
 from app.core.stream import get_audio_file_response
@@ -116,6 +121,44 @@ async def resolve_track(track_id: str, db: AsyncSession = Depends(get_db)):
 
     return await job_manager.get_or_create(track.id, _resolve)
 
+async def _do_stream(track: CatalogTrack, db: AsyncSession):
+    """Common streaming logic: cache → ytmusic → soulseek."""
+    await catalog_manager.sync_track_to_db(track, db)
+    canonical = catalog_manager.to_canonical_track(track)
+    # 1. Check local on-disk audio cache
+    cached = cache_manager.find_cached_file(canonical.canonical_id)
+    if cached:
+        logger.info(f"[PLAYBACK] Cache hit for '{track.title}'")
+        return get_audio_file_response(cached)
+
+    # 2. Instant live playback via ytmusic-stream-server
+    ytmusic_url = getattr(settings, "YTMUSIC_STREAM_URL", "http://ytmusic-stream-server:8081").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=False) as client:
+            res = await client.get(
+                f"{ytmusic_url}/stream",
+                params={"artist": track.artist_name, "title": track.title}
+            )
+            if res.status_code in (301, 302, 303, 307, 308):
+                cdn_url = res.headers.get("Location")
+                if cdn_url:
+                    logger.info(f"[PLAYBACK] Instant stream redirect for '{track.title}' -> CDN")
+                    asyncio.create_task(acquisition_manager.acquire_track_audio(canonical, db))
+                    return RedirectResponse(url=cdn_url, status_code=302)
+    except Exception as e:
+        logger.warning(f"[PLAYBACK] ytmusic-stream-server unavailable ({e}), falling back to Soulseek...")
+
+    # 3. Fallback: Soulseek acquisition
+    try:
+        audio_file = await acquisition_manager.acquire_track_audio(canonical, db)
+        return get_audio_file_response(audio_file)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"[PLAYBACK] Failed acquisition for '{canonical.title}': {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to acquire recording: {str(e)}")
+
+
 @app.get("/stream")
 async def stream_query(
     artist: str | None = Query(None),
@@ -134,43 +177,8 @@ async def stream_query(
     search_res = await catalog_manager.search(query_str, limit=1)
     if not search_res.tracks:
         raise HTTPException(status_code=404, detail=f"Track '{query_str}' not found in catalog")
-    track = search_res.tracks[0]
-    await catalog_manager.sync_track_to_db(track, db)
-    canonical = catalog_manager.to_canonical_track(track)
-    # 1. Check local on-disk audio cache
-    cached = cache_manager.find_cached_file(canonical.canonical_id)
-    if cached:
-        logger.info(f"[PLAYBACK] Cache hit for '{track.title}'")
-        return get_audio_file_response(cached)
+    return await _do_stream(search_res.tracks[0], db)
 
-    # 2. Instant live playback via ytmusic-stream-server
-    ytmusic_url = getattr(settings, "YTMUSIC_STREAM_URL", "http://ytmusic-stream-server:8081").rstrip("/")
-    try:
-        async with httpx.AsyncClient(timeout=4.0, follow_redirects=False) as client:
-            res = await client.get(
-                f"{ytmusic_url}/stream",
-                params={"artist": track.artist_name, "title": track.title}
-            )
-            if res.status_code in (301, 302, 303, 307, 308):
-                cdn_url = res.headers.get("Location")
-                if cdn_url:
-                    logger.info(f"[PLAYBACK] Instant stream redirect for '{track.title}' -> CDN")
-                    # Background acquisition for persistent offline cache
-                    import asyncio
-                    asyncio.create_task(acquisition_manager.acquire_track_audio(canonical, db))
-                    return RedirectResponse(url=cdn_url, status_code=302)
-    except Exception as e:
-        logger.warning(f"[PLAYBACK] ytmusic-stream-server unavailable ({e}), falling back to Soulseek...")
-
-    # 3. Fallback: Soulseek acquisition
-    try:
-        audio_file = await acquisition_manager.acquire_track_audio(canonical, db)
-        return get_audio_file_response(audio_file)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"[PLAYBACK] Failed acquisition for '{canonical.title}': {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to acquire recording: {str(e)}")
 
 @app.get("/playback/{track_id:path}")
 @app.get("/stream/{track_id:path}")
@@ -178,55 +186,23 @@ async def stream_track(track_id: str, db: AsyncSession = Depends(get_db)):
     """
     Audio playback & streaming endpoint for Jellyfin.
     Supports HTTP 206 Partial Content (byte-range seeking).
-    Checks cache first; acquires, validates, and atomically caches on demand if cache miss.
     """
     track = await catalog_manager.get_track(track_id)
     if not track:
         raise HTTPException(status_code=404, detail="Track not found in catalog")
-
-    # Persist track in DB with deterministic GUID
-    await catalog_manager.sync_track_to_db(track, db)
-    canonical = catalog_manager.to_canonical_track(track)
-
-    # 1. Check local on-disk audio cache
-    cached = cache_manager.find_cached_file(canonical.canonical_id)
-    if cached:
-        logger.info(f"[PLAYBACK] Cache hit for '{track.title}'")
-        return get_audio_file_response(cached)
-
-    # 2. Instant live playback via ytmusic-stream-server
-    ytmusic_url = getattr(settings, "YTMUSIC_STREAM_URL", "http://ytmusic-stream-server:8081").rstrip("/")
-    try:
-        async with httpx.AsyncClient(timeout=4.0, follow_redirects=False) as client:
-            res = await client.get(
-                f"{ytmusic_url}/stream",
-                params={"artist": track.artist_name, "title": track.title}
-            )
-            if res.status_code in (301, 302, 303, 307, 308):
-                cdn_url = res.headers.get("Location")
-                if cdn_url:
-                    logger.info(f"[PLAYBACK] Instant stream redirect for '{track.title}' -> CDN")
-                    # Background acquisition for persistent offline cache
-                    import asyncio
-                    asyncio.create_task(acquisition_manager.acquire_track_audio(canonical, db))
-                    return RedirectResponse(url=cdn_url, status_code=302)
-    except Exception as e:
-        logger.warning(f"[PLAYBACK] ytmusic-stream-server unavailable ({e}), falling back to Soulseek...")
-
-    # 3. Fallback: Soulseek acquisition
-    try:
-        audio_file = await acquisition_manager.acquire_track_audio(canonical, db)
-        return get_audio_file_response(audio_file)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"[PLAYBACK] Failed acquisition for '{canonical.title}': {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to acquire recording: {str(e)}")
+    return await _do_stream(track, db)
 
 
 # =====================================================================
 # Jellyfin Virtual Provider Integration Endpoints
 # =====================================================================
+
+def extract_provider_ids(raw_id: str) -> dict[str, str]:
+    parts = raw_id.split(":")
+    if len(parts) >= 2:
+        return {parts[0].capitalize(): parts[-1]}
+    return {"Resono": raw_id}
+
 
 @app.get("/jellyfin/search")
 async def jellyfin_search(
@@ -237,12 +213,6 @@ async def jellyfin_search(
 ):
     """Search endpoint formatted for Jellyfin C# RemoteSearchProvider and action filters."""
     results = await catalog_manager.search(q, limit=limit, provider=provider, fallback=fallback)
-
-    def extract_provider_ids(raw_id: str) -> dict[str, str]:
-        parts = raw_id.split(":")
-        if len(parts) >= 2:
-            return {parts[0].capitalize(): parts[-1]}
-        return {"Resono": raw_id}
 
     return {
         "artists": [
@@ -272,7 +242,9 @@ async def jellyfin_search(
                 "canonicalId": catalog_manager.to_canonical_track(t).canonical_id,
                 "name": t.title,
                 "artistName": t.artist_name,
+                "artistId": t.artist_id,
                 "albumName": t.album_title,
+                "albumId": t.album_id,
                 "durationMs": t.duration_ms,
                 "trackNumber": t.track_number,
                 "discNumber": t.disc_number,
@@ -304,7 +276,7 @@ async def jellyfin_track_metadata(track_id: str):
         "discNumber": track.disc_number,
         "imageUrl": track.artwork_url,
         "streamUrl": f"/playback/{track.id}",
-        "providerIds": {"Spotify": track.id.replace("spotify:track:", "")}
+        "providerIds": extract_provider_ids(track.id)
     }
 
 @app.get("/jellyfin/album/{album_id:path}")
@@ -321,20 +293,22 @@ async def jellyfin_album_details(album_id: str):
         "artistId": album.artist_id,
         "releaseDate": album.release_date,
         "imageUrl": album.artwork_url,
-        "providerIds": {"Spotify": album.id.replace("spotify:album:", "")},
+        "providerIds": extract_provider_ids(album.id),
         "tracks": [
             {
                 "id": t.id,
                 "canonicalId": catalog_manager.to_canonical_track(t).canonical_id,
                 "name": t.title,
                 "artistName": t.artist_name,
+                "artistId": t.artist_id,
                 "albumName": t.album_title,
+                "albumId": t.album_id,
                 "durationMs": t.duration_ms,
                 "trackNumber": t.track_number,
                 "discNumber": t.disc_number,
                 "imageUrl": t.artwork_url or album.artwork_url,
                 "streamUrl": f"/playback/{t.id}",
-                "providerIds": {"Spotify": t.id.replace("spotify:track:", "")}
+                "providerIds": extract_provider_ids(t.id)
             }
             for t in tracks
         ]
@@ -350,7 +324,7 @@ async def jellyfin_artist_details(artist_id: str):
         "id": artist.id,
         "name": artist.name,
         "imageUrl": artist.artwork_url,
-        "providerIds": {"Spotify": artist.id.replace("spotify:artist:", "")}
+        "providerIds": extract_provider_ids(artist.id)
     }
 
 @app.get("/jellyfin/image")
@@ -359,8 +333,6 @@ async def jellyfin_image_proxy(url: str = Query(...)):
     Proxy image requests so mobile clients like Discrete, Finamp, Manet
     receive standard 200 OK responses with caching, avoiding cross-domain 302 drops.
     """
-    import httpx
-    from fastapi.responses import Response
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             res = await client.get(url, timeout=10.0)
@@ -386,8 +358,6 @@ async def jellyfin_playback_telemetry(payload: dict[str, Any], db: AsyncSession 
     play_count = payload.get("playCount", 1)
 
     # If entry exists, boost retention
-    from sqlalchemy import select
-    from app.db.models import CacheEntry
     res = await db.execute(select(CacheEntry).where(CacheEntry.track_id == canonical_id))
     entry = res.scalar_one_or_none()
     if entry:
@@ -411,7 +381,9 @@ async def jellyfin_artist_top_tracks(artist_id: str, name: str | None = Query(No
                 "canonicalId": catalog_manager.to_canonical_track(t).canonical_id,
                 "name": t.title,
                 "artistName": t.artist_name,
+                "artistId": t.artist_id,
                 "albumName": t.album_title,
+                "albumId": t.album_id,
                 "durationMs": t.duration_ms,
                 "trackNumber": t.track_number,
                 "discNumber": t.disc_number,
@@ -492,7 +464,9 @@ async def jellyfin_get_chart_tracks(chart_id: str, limit: int = Query(50, ge=1, 
                 "canonicalId": catalog_manager.to_canonical_track(t).canonical_id,
                 "name": t.title,
                 "artistName": t.artist_name,
+                "artistId": t.artist_id,
                 "albumName": t.album_title,
+                "albumId": t.album_id,
                 "durationMs": t.duration_ms,
                 "trackNumber": t.track_number,
                 "discNumber": t.disc_number,
@@ -520,8 +494,6 @@ async def jellyfin_get_lyrics(
 async def jellyfin_pin_track(track_id: str, db: AsyncSession = Depends(get_db)):
     """Pin a track in cache permanently (exempt from LRU eviction) when favorited."""
     canonical_id = deterministic_guid(track_id)
-    from sqlalchemy import select
-    from app.db.models import CacheEntry
     res = await db.execute(select(CacheEntry).where(CacheEntry.track_id == canonical_id))
     entry = res.scalar_one_or_none()
     if entry:

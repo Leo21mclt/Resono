@@ -35,7 +35,7 @@ namespace Resono.Plugin.Providers
                 return results;
             }
 
-            var gatewayUrl = Plugin.Instance?.Configuration.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+            var gatewayUrl = Resono.Plugin.Filters.ResonoSearchActionFilter.GetEffectiveGatewayUrl(Plugin.Instance?.Configuration.GatewayUrl);
             var url = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(query)}";
 
             try
