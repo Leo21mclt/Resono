@@ -1,0 +1,73 @@
+﻿# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+*cookies*.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Databases and Runtime Data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+**/data/
+**/cache/
+**/downloads/
+*.part
+
+# Logs
+*.log
+logs/
+
+# .NET / C# Build Artifacts
+**/bin/
+**/obj/
+*.user
+*.suo
+*.userprefs
+
+# IDE & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Scratch and temporary files
+scratch_*.py

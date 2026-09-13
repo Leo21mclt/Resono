@@ -1,0 +1,17 @@
+﻿**/.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.env*
+**/data/
+**/cache/
+**/downloads/
+**/logs/
+**/*.db
+**/*.sqlite*
+**/*.part
+**/bin/
+**/obj/
+.git/
+scratch_*.py

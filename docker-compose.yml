@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  resono-gateway:
+    build:
+      context: ./resono-gateway
+      dockerfile: Dockerfile
+    container_name: resono-gateway
+    restart: unless-stopped
+    environment:
+      - RESONO_HOST=0.0.0.0
+      - RESONO_PORT=8080
+      - RESONO_SOULSEEK_BACKEND=slskd
+      - RESONO_SLSKD_URL=${RESONO_SLSKD_URL:-http://host.docker.internal:5030}
+      - RESONO_SLSKD_API_KEY=${RESONO_SLSKD_API_KEY:-}
+      - RESONO_SLSKD_DOWNLOADS_PATH=/downloads
+      - RESONO_MAX_CACHE_SIZE_GB=${RESONO_MAX_CACHE_SIZE_GB:-50.0}
+      - RESONO_MIN_FREE_DISK_GB=${RESONO_MIN_FREE_DISK_GB:-10.0}
+      - RESONO_MATCHER_CONFIDENCE_THRESHOLD=${RESONO_MATCHER_CONFIDENCE_THRESHOLD:-0.80}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - resono-data:/app/data
+      - resono-cache:/app/cache
+      - /var/lib/docker/volumes/music-stack-jellyfinmediaserver-q8vogu_slskd-downloads/_data:/downloads:ro
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  resono-data:
+  resono-cache:

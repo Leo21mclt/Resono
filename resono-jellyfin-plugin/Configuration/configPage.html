@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Resono Virtual Music Configuration</title>
+</head>
+<body>
+    <div id="resonoConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+        <div data-role="content">
+            <div class="content-primary">
+                <h1>Resono Virtual Music Configuration</h1>
+                <form id="resonoConfigForm">
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="gatewayUrl">Resono Gateway URL</label>
+                        <input id="gatewayUrl" name="gatewayUrl" type="text" is="emby-input" class="emby-input" required />
+                        <div class="fieldDescription">Base URL of the Resono Gateway service (e.g. http://resono-gateway:8080 or http://192.168.1.100:8080).</div>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="enableDirectPlay" name="enableDirectPlay" type="checkbox" is="emby-checkbox" />
+                            <span>Enable Direct Play & HTTP 206 Streaming</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">Allow Jellyfin clients to stream directly from the Resono Gateway using byte ranges.</div>
+                    </div>
+                    <div>
+                        <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                            <span>Save</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <script type="text/javascript">
+            var ResonoConfig = {
+                pluginUniqueId: '76824f11-0cb1-4fa3-80b6-71d53344b5a3'
+            };
+
+            document.querySelector('#resonoConfigPage').addEventListener('pageshow', function () {
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(ResonoConfig.pluginUniqueId).then(function (config) {
+                    document.querySelector('#gatewayUrl').value = config.GatewayUrl || 'http://localhost:8080';
+                    document.querySelector('#enableDirectPlay').checked = config.EnableDirectPlay !== false;
+                    Dashboard.hideLoadingMsg();
+                });
+            });
+
+            document.querySelector('#resonoConfigForm').addEventListener('submit', function (e) {
+                e.preventDefault();
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(ResonoConfig.pluginUniqueId).then(function (config) {
+                    config.GatewayUrl = document.querySelector('#gatewayUrl').value;
+                    config.EnableDirectPlay = document.querySelector('#enableDirectPlay').checked;
+                    ApiClient.updatePluginConfiguration(ResonoConfig.pluginUniqueId, config).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                    });
+                });
+                return false;
+            });
+        </script>
+    </div>
+</body>
+</html>
