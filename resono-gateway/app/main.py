@@ -176,16 +176,28 @@ async def stream_track(track_id: str, db: AsyncSession = Depends(get_db)):
 # =====================================================================
 
 @app.get("/jellyfin/search")
-async def jellyfin_search(q: str = Query(..., min_length=1), limit: int = Query(20, ge=1, le=50)):
+async def jellyfin_search(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=50),
+    provider: str | None = Query(None),
+    fallback: str | None = Query(None)
+):
     """Search endpoint formatted for Jellyfin C# RemoteSearchProvider and action filters."""
-    results = await catalog_manager.search(q, limit=limit)
+    results = await catalog_manager.search(q, limit=limit, provider=provider, fallback=fallback)
+
+    def extract_provider_ids(raw_id: str) -> dict[str, str]:
+        parts = raw_id.split(":")
+        if len(parts) >= 2:
+            return {parts[0].capitalize(): parts[-1]}
+        return {"Resono": raw_id}
+
     return {
         "artists": [
             {
                 "id": a.id,
                 "name": a.name,
                 "imageUrl": a.artwork_url,
-                "providerIds": {"Spotify": a.id.replace("spotify:artist:", "")}
+                "providerIds": extract_provider_ids(a.id)
             }
             for a in results.artists
         ],
@@ -197,7 +209,7 @@ async def jellyfin_search(q: str = Query(..., min_length=1), limit: int = Query(
                 "artistId": al.artist_id,
                 "releaseDate": al.release_date,
                 "imageUrl": al.artwork_url,
-                "providerIds": {"Spotify": al.id.replace("spotify:album:", "")}
+                "providerIds": extract_provider_ids(al.id)
             }
             for al in results.albums
         ],
@@ -213,7 +225,7 @@ async def jellyfin_search(q: str = Query(..., min_length=1), limit: int = Query(
                 "discNumber": t.disc_number,
                 "imageUrl": t.artwork_url,
                 "streamUrl": f"/playback/{t.id}",
-                "providerIds": {"Spotify": t.id.replace("spotify:track:", "")}
+                "providerIds": extract_provider_ids(t.id)
             }
             for t in results.tracks
         ]

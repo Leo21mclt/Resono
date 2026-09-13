@@ -31,8 +31,8 @@ def test_jellyfin_search_endpoint():
         t = data["tracks"][0]
         assert "canonicalId" in t
         assert "streamUrl" in t
-        assert "providerIds" in t
-        assert "Spotify" in t["providerIds"]
+        assert len(t["providerIds"]) > 0
+        assert any(k in t["providerIds"] for k in ("Spotify", "Itunes", "Deezer", "Mb", "Resono"))
 
 def test_jellyfin_telemetry():
     response = client.post("/jellyfin/telemetry/playback", json={

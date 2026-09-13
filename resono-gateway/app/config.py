@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     SLSKD_TIMEOUT_SECONDS: int = 15
     SLSKD_SEARCH_TIMEOUT_SECONDS: int = 6
 
-    # Spotify Catalog Provider settings
+    # Catalog Provider settings
+    CATALOG_PROVIDER: str = "apple"  # "apple" | "deezer" | "spotify" | "musicbrainz"
+    FALLBACK_CATALOG_PROVIDER: str = "deezer"
     SPOTIFY_CLIENT_ID: str | None = None
     SPOTIFY_CLIENT_SECRET: str | None = None
 

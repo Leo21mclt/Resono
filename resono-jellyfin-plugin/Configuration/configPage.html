@@ -1,30 +1,112 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <title>Resono Virtual Music Configuration</title>
+    <style>
+        .resono-card {
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+        .resono-provider-info {
+            margin-top: 10px;
+            font-size: 0.9em;
+            line-height: 1.5;
+            color: #bbb;
+        }
+        .resono-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: bold;
+            margin-right: 6px;
+        }
+        .badge-recommended { background-color: #2e7d32; color: #fff; }
+        .badge-fast { background-color: #0288d1; color: #fff; }
+        .badge-open { background-color: #7b1fa2; color: #fff; }
+        .badge-slow { background-color: #e65100; color: #fff; }
+    </style>
 </head>
 <body>
-    <div id="resonoConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox">
+    <div id="resonoConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-checkbox,emby-select">
         <div data-role="content">
             <div class="content-primary">
                 <h1>Resono Virtual Music Configuration</h1>
+                <p>Configure your self-hosted high-fidelity virtual music catalog powered by Soulseek and public metadata providers.</p>
+
                 <form id="resonoConfigForm">
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="gatewayUrl">Resono Gateway URL</label>
-                        <input id="gatewayUrl" name="gatewayUrl" type="text" is="emby-input" class="emby-input" required />
-                        <div class="fieldDescription">Base URL of the Resono Gateway service (e.g. http://resono-gateway:8080 or http://192.168.1.100:8080).</div>
+                    <div class="resono-card">
+                        <h2>Service Connectivity</h2>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="gatewayUrl">Resono Gateway URL</label>
+                            <input id="gatewayUrl" name="gatewayUrl" type="text" is="emby-input" class="emby-input" required />
+                            <div class="fieldDescription">Base URL of your Resono Gateway instance (e.g. <code>http://resono-gateway:8080</code> or <code>http://localhost:8080</code>).</div>
+                        </div>
                     </div>
-                    <div class="checkboxContainer checkboxContainer-withDescription">
-                        <label class="emby-checkbox-label">
-                            <input id="enableDirectPlay" name="enableDirectPlay" type="checkbox" is="emby-checkbox" />
-                            <span>Enable Direct Play & HTTP 206 Streaming</span>
-                        </label>
-                        <div class="fieldDescription checkboxFieldDescription">Allow Jellyfin clients to stream directly from the Resono Gateway using byte ranges.</div>
+
+                    <div class="resono-card">
+                        <h2>Catalog Metadata Providers</h2>
+                        <p>Choose where Resono searches for track metadata, albums, and high-resolution cover arts.</p>
+
+                        <div class="selectContainer">
+                            <label class="selectLabel" for="catalogProvider">Primary Catalog Provider</label>
+                            <select id="catalogProvider" name="catalogProvider" is="emby-select" class="emby-select-withcolor emby-select">
+                                <option value="apple">Apple Music (iTunes API) - Recommended</option>
+                                <option value="deezer">Deezer API - Fast</option>
+                                <option value="musicbrainz">MusicBrainz - Open Archive</option>
+                                <option value="spotify">Spotify (SpotAPI) - Headless</option>
+                            </select>
+                            <div class="resono-provider-info" id="providerDescription">
+                                <!-- Dynamic provider description -->
+                            </div>
+                        </div>
+
+                        <div class="selectContainer" style="margin-top: 20px;">
+                            <label class="selectLabel" for="fallbackCatalogProvider">Secondary / Fallback Provider</label>
+                            <select id="fallbackCatalogProvider" name="fallbackCatalogProvider" is="emby-select" class="emby-select-withcolor emby-select">
+                                <option value="deezer">Deezer API (Recommended Fallback)</option>
+                                <option value="apple">Apple Music (iTunes API)</option>
+                                <option value="spotify">Spotify (SpotAPI)</option>
+                                <option value="musicbrainz">MusicBrainz</option>
+                                <option value="none">Disabled (No Fallback)</option>
+                            </select>
+                            <div class="fieldDescription">Used automatically if the primary provider returns 0 results or experiences network errors.</div>
+                        </div>
                     </div>
+
+                    <div class="resono-card">
+                        <h2>Search & Playback Performance</h2>
+
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="searchLimit">Search Results Limit</label>
+                            <input id="searchLimit" name="searchLimit" type="number" min="5" max="50" step="5" is="emby-input" class="emby-input" />
+                            <div class="fieldDescription">Maximum number of virtual tracks to return per search query (Default: 20).</div>
+                        </div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="enableSearchCache" name="enableSearchCache" type="checkbox" is="emby-checkbox" />
+                                <span>Enable In-Memory Search Cache</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">Caches search results in Jellyfin memory for 15 minutes. Makes mobile app auto-complete (Discrete, Manet, Finamp) feel completely instantaneous (0ms).</div>
+                        </div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="enableDirectPlay" name="enableDirectPlay" type="checkbox" is="emby-checkbox" />
+                                <span>Enable Direct Play & HTTP 206 Streaming</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">Stream lossless FLAC/MP3 directly from the Resono Gateway with byte-range seeking and playback resumption.</div>
+                        </div>
+                    </div>
+
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
-                            <span>Save</span>
+                            <span>Save Configuration</span>
                         </button>
                     </div>
                 </form>
@@ -32,14 +114,36 @@
         </div>
         <script type="text/javascript">
             var ResonoConfig = {
-                pluginUniqueId: '76824f11-0cb1-4fa3-80b6-71d53344b5a3'
+                pluginUniqueId: '76824f11-0cb1-4fa3-80b6-71d53344b5a3',
+                descriptions: {
+                    'apple': '<span class="resono-badge badge-recommended">RECOMMENDED</span> <strong>Apple Music:</strong> 100% public, ultra-fast (~150ms). Over 100M songs, pristine Ultra-HD artwork (up to 1400x1400). Zero configuration or API keys required.',
+                    'deezer': '<span class="resono-badge badge-fast">ULTRA-FAST</span> <strong>Deezer:</strong> 100% public, ultra-fast (~80ms). Extensive international catalog, track numbers, high-res 1000x1000 artwork. Zero credentials required.',
+                    'musicbrainz': '<span class="resono-badge badge-open">COMMUNITY</span> <strong>MusicBrainz:</strong> Open community encyclopedia. Comprehensive discography and historical releases. Best for rare and classical recordings.',
+                    'spotify': '<span class="resono-badge badge-slow">HEADLESS</span> <strong>Spotify (SpotAPI):</strong> Spotify public catalog via headless GraphQL browser emulation. Comprehensive catalog, but slower (~3-5s response time) due to TLS session negotiation.'
+                }
             };
+
+            function updateProviderText(provider) {
+                var descEl = document.querySelector('#providerDescription');
+                if (descEl && ResonoConfig.descriptions[provider]) {
+                    descEl.innerHTML = ResonoConfig.descriptions[provider];
+                }
+            }
+
+            document.querySelector('#catalogProvider').addEventListener('change', function (e) {
+                updateProviderText(e.target.value);
+            });
 
             document.querySelector('#resonoConfigPage').addEventListener('pageshow', function () {
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(ResonoConfig.pluginUniqueId).then(function (config) {
                     document.querySelector('#gatewayUrl').value = config.GatewayUrl || 'http://localhost:8080';
+                    document.querySelector('#catalogProvider').value = config.CatalogProvider || 'apple';
+                    document.querySelector('#fallbackCatalogProvider').value = config.FallbackCatalogProvider || 'deezer';
+                    document.querySelector('#searchLimit').value = config.SearchLimit || 20;
+                    document.querySelector('#enableSearchCache').checked = config.EnableSearchCache !== false;
                     document.querySelector('#enableDirectPlay').checked = config.EnableDirectPlay !== false;
+                    updateProviderText(config.CatalogProvider || 'apple');
                     Dashboard.hideLoadingMsg();
                 });
             });
@@ -49,6 +153,10 @@
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(ResonoConfig.pluginUniqueId).then(function (config) {
                     config.GatewayUrl = document.querySelector('#gatewayUrl').value;
+                    config.CatalogProvider = document.querySelector('#catalogProvider').value;
+                    config.FallbackCatalogProvider = document.querySelector('#fallbackCatalogProvider').value;
+                    config.SearchLimit = parseInt(document.querySelector('#searchLimit').value, 10) || 20;
+                    config.EnableSearchCache = document.querySelector('#enableSearchCache').checked;
                     config.EnableDirectPlay = document.querySelector('#enableDirectPlay').checked;
                     ApiClient.updatePluginConfiguration(ResonoConfig.pluginUniqueId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);

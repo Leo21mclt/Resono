@@ -1,10 +1,14 @@
-import logging
+﻿import logging
+import time
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.config import settings
 from app.catalog.models import CatalogSearchResult, CatalogArtist, CatalogAlbum, CatalogTrack
 from app.catalog.provider import CatalogProvider
-from app.catalog.spotify import SpotifyProvider
 from app.catalog.itunes import ITunesProvider
+from app.catalog.deezer import DeezerProvider
+from app.catalog.spotify import SpotifyProvider
+from app.catalog.musicbrainz import MusicBrainzProvider
 from app.core.models import CanonicalTrack, deterministic_guid
 from app.db.models import Track, Album, Artist
 from app.db.database import AsyncSessionLocal
@@ -13,69 +17,131 @@ logger = logging.getLogger("resono.catalog.manager")
 
 class CatalogManager:
     """
-    Multi-provider catalog orchestrator.
-    Prioritizes SpotifyProvider as primary canonical catalog.
-    Gracefully falls back to ITunesProvider if Spotify is unconfigured or unavailable.
+    Multi-provider catalog orchestrator supporting:
+    - Apple Music (iTunes API, ultra-fast, 1400x1400 art, zero auth) - Default
+    - Deezer API (ultra-fast, rich tracklists, zero auth)
+    - Spotify (SpotAPI zero-auth or Official Web API)
+    - MusicBrainz (open community encyclopedia)
     """
-    def __init__(
+    def __init__(self):
+        self.providers: dict[str, CatalogProvider] = {
+            "apple": ITunesProvider(),
+            "itunes": ITunesProvider(),
+            "deezer": DeezerProvider(),
+            "spotify": SpotifyProvider(),
+            "musicbrainz": MusicBrainzProvider(),
+            "mb": MusicBrainzProvider(),
+        }
+        self._cache: dict[str, tuple[float, CatalogSearchResult]] = {}
+        self._cache_ttl_sec = 600  # 10 minutes
+
+    def get_provider(self, name: str | None) -> CatalogProvider:
+        clean = (name or "").lower().strip()
+        if clean in self.providers:
+            return self.providers[clean]
+        default_name = getattr(settings, "CATALOG_PROVIDER", "apple").lower().strip()
+        return self.providers.get(default_name, self.providers["apple"])
+
+    async def search(
         self,
-        primary_provider: CatalogProvider | None = None,
-        fallback_provider: CatalogProvider | None = None
-    ):
-        self.primary: CatalogProvider = primary_provider or SpotifyProvider()
-        self.fallback: CatalogProvider = fallback_provider or ITunesProvider()
+        query: str,
+        limit: int = 20,
+        provider: str | None = None,
+        fallback: str | None = None
+    ) -> CatalogSearchResult:
+        clean_query = query.strip()
+        if not clean_query:
+            return CatalogSearchResult()
 
-    async def search(self, query: str, limit: int = 20) -> CatalogSearchResult:
-        # 1. Try Spotify (primary) if configured
-        if isinstance(self.primary, SpotifyProvider) and self.primary.is_configured():
+        prim_name = provider or getattr(settings, "CATALOG_PROVIDER", "apple")
+        fall_name = fallback or getattr(settings, "FALLBACK_CATALOG_PROVIDER", "deezer")
+        cache_key = f"{prim_name}:{fall_name}:{limit}:{clean_query.lower()}"
+
+        # 1. Check in-memory search cache
+        now = time.time()
+        if cache_key in self._cache:
+            exp, cached_res = self._cache[cache_key]
+            if now < exp:
+                return cached_res
+
+        primary = self.get_provider(prim_name)
+        fallback_prov = self.get_provider(fall_name) if fall_name and fall_name != "none" else None
+
+        # 2. Try primary provider
+        try:
+            logger.info(f"Searching via primary catalog provider ({primary.name}) for '{clean_query}'...")
+            res = await primary.search(clean_query, limit=limit)
+            if res.tracks or res.albums or res.artists:
+                self._cache[cache_key] = (now + self._cache_ttl_sec, res)
+                return res
+            logger.info(f"Primary provider ({primary.name}) returned 0 results, trying fallback...")
+        except Exception as e:
+            logger.warning(f"Primary provider ({primary.name}) error: {e}")
+
+        # 3. Fallback provider if primary yielded 0 or failed
+        if fallback_prov and fallback_prov != primary:
             try:
-                res = await self.primary.search(query, limit=limit)
-                if res.tracks or res.albums or res.artists:
-                    return res
-                logger.info(f"Primary provider returned 0 results for '{query}', trying fallback...")
+                logger.info(f"Searching via fallback catalog provider ({fallback_prov.name}) for '{clean_query}'...")
+                res_fall = await fallback_prov.search(clean_query, limit=limit)
+                if res_fall.tracks or res_fall.albums or res_fall.artists:
+                    self._cache[cache_key] = (now + self._cache_ttl_sec, res_fall)
+                    return res_fall
             except Exception as e:
-                logger.warning(f"Primary catalog provider error: {e}")
+                logger.warning(f"Fallback provider ({fallback_prov.name}) error: {e}")
 
-        # 2. Fall back to iTunes
-        logger.info(f"Searching via fallback catalog provider ({self.fallback.name}) for '{query}'")
-        return await self.fallback.search(query, limit=limit)
+        return CatalogSearchResult()
 
     async def get_artist(self, artist_id: str) -> CatalogArtist | None:
-        if artist_id.startswith("spotify:"):
-            if isinstance(self.primary, SpotifyProvider) and self.primary.is_configured():
-                return await self.primary.get_artist(artist_id)
-        elif artist_id.startswith("itunes:"):
-            return await self.fallback.get_artist(artist_id)
+        prefix = artist_id.split(":")[0].lower() if ":" in artist_id else ""
+        if prefix in ("itunes", "apple"):
+            return await self.providers["apple"].get_artist(artist_id)
+        if prefix == "deezer":
+            return await self.providers["deezer"].get_artist(artist_id)
+        if prefix == "spotify":
+            return await self.providers["spotify"].get_artist(artist_id)
+        if prefix in ("mb", "musicbrainz"):
+            return await self.providers["musicbrainz"].get_artist(artist_id)
 
-        # Generic lookup: try primary then fallback
-        res = await self.primary.get_artist(artist_id)
-        if not res and self.fallback:
-            res = await self.fallback.get_artist(artist_id)
-        return res
+        # Fallback search across providers
+        for prov in (self.providers["apple"], self.providers["deezer"], self.providers["spotify"]):
+            res = await prov.get_artist(artist_id)
+            if res:
+                return res
+        return None
 
     async def get_album(self, album_id: str) -> tuple[CatalogAlbum, list[CatalogTrack]] | None:
-        if album_id.startswith("spotify:"):
-            if isinstance(self.primary, SpotifyProvider) and self.primary.is_configured():
-                return await self.primary.get_album(album_id)
-        elif album_id.startswith("itunes:"):
-            return await self.fallback.get_album(album_id)
+        prefix = album_id.split(":")[0].lower() if ":" in album_id else ""
+        if prefix in ("itunes", "apple"):
+            return await self.providers["apple"].get_album(album_id)
+        if prefix == "deezer":
+            return await self.providers["deezer"].get_album(album_id)
+        if prefix == "spotify":
+            return await self.providers["spotify"].get_album(album_id)
+        if prefix in ("mb", "musicbrainz"):
+            return await self.providers["musicbrainz"].get_album(album_id)
 
-        res = await self.primary.get_album(album_id)
-        if not res and self.fallback:
-            res = await self.fallback.get_album(album_id)
-        return res
+        for prov in (self.providers["apple"], self.providers["deezer"], self.providers["spotify"]):
+            res = await prov.get_album(album_id)
+            if res:
+                return res
+        return None
 
     async def get_track(self, track_id: str) -> CatalogTrack | None:
-        if track_id.startswith("spotify:"):
-            if isinstance(self.primary, SpotifyProvider) and self.primary.is_configured():
-                return await self.primary.get_track(track_id)
-        elif track_id.startswith("itunes:"):
-            return await self.fallback.get_track(track_id)
+        prefix = track_id.split(":")[0].lower() if ":" in track_id else ""
+        if prefix in ("itunes", "apple"):
+            return await self.providers["apple"].get_track(track_id)
+        if prefix == "deezer":
+            return await self.providers["deezer"].get_track(track_id)
+        if prefix == "spotify":
+            return await self.providers["spotify"].get_track(track_id)
+        if prefix in ("mb", "musicbrainz"):
+            return await self.providers["musicbrainz"].get_track(track_id)
 
-        res = await self.primary.get_track(track_id)
-        if not res and self.fallback:
-            res = await self.fallback.get_track(track_id)
-        return res
+        for prov in (self.providers["apple"], self.providers["deezer"], self.providers["spotify"]):
+            res = await prov.get_track(track_id)
+            if res:
+                return res
+        return None
 
     def to_canonical_track(self, track: CatalogTrack) -> CanonicalTrack:
         """Convert a CatalogTrack into the backend-neutral CanonicalTrack with deterministic GUID."""
@@ -99,9 +165,8 @@ class CatalogManager:
     async def sync_track_to_db(self, track: CatalogTrack, session: AsyncSession) -> Track:
         """
         Persist canonical Track, Album, and Artist records into SQLite.
-        Uses deterministic GUIDs derived from Spotify IDs for stable primary keys.
+        Uses deterministic GUIDs derived from provider IDs for stable primary keys.
         """
-        # 1. Check or insert Artist
         res_artist = await session.execute(select(Artist).where(Artist.spotify_id == track.artist_id))
         db_artist = res_artist.scalar_one_or_none()
         if not db_artist:
@@ -114,7 +179,6 @@ class CatalogManager:
             session.add(db_artist)
             await session.flush()
 
-        # 2. Check or insert Album
         res_album = await session.execute(select(Album).where(Album.spotify_id == track.album_id))
         db_album = res_album.scalar_one_or_none()
         if not db_album:
@@ -128,7 +192,6 @@ class CatalogManager:
             session.add(db_album)
             await session.flush()
 
-        # 3. Check or insert Track
         res_track = await session.execute(select(Track).where(Track.spotify_id == track.id))
         db_track = res_track.scalar_one_or_none()
         if not db_track:
@@ -151,4 +214,3 @@ class CatalogManager:
         return db_track
 
 catalog_manager = CatalogManager()
-

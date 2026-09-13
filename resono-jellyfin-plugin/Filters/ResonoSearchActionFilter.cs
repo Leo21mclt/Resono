@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -22,6 +23,8 @@ namespace Resono.Plugin.Filters
 {
     public class ResonoSearchActionFilter : IAsyncResultFilter
     {
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, GatewaySearchResponse Data)> _searchMemoryCache = new(StringComparer.OrdinalIgnoreCase);
+
         private static readonly HashSet<string> MusicTypes = new(StringComparer.OrdinalIgnoreCase)
         {
             "Audio", "MusicAlbum", "MusicArtist", "AudioBook",
@@ -115,10 +118,28 @@ namespace Resono.Plugin.Filters
 
             var cfg = Plugin.Instance!.Configuration;
             var gatewayUrl = cfg.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
-            var url = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(term)}&limit={cfg.SearchLimit}";
+            var provider = !string.IsNullOrWhiteSpace(cfg.CatalogProvider) ? cfg.CatalogProvider : "apple";
+            var fallback = !string.IsNullOrWhiteSpace(cfg.FallbackCatalogProvider) ? cfg.FallbackCatalogProvider : "deezer";
+            var limit = cfg.SearchLimit > 0 ? cfg.SearchLimit : 20;
 
-            var client = _httpClientFactory.CreateClient();
-            var searchData = await client.GetFromJsonAsync<GatewaySearchResponse>(url, ct).ConfigureAwait(false);
+            GatewaySearchResponse? searchData = null;
+            var cacheKey = $"{provider}:{fallback}:{limit}:{term.Trim().ToLowerInvariant()}";
+
+            if (cfg.EnableSearchCache && _searchMemoryCache.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow < cached.Expires)
+            {
+                searchData = cached.Data;
+            }
+            else
+            {
+                var url = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(term)}&limit={limit}&provider={Uri.EscapeDataString(provider)}&fallback={Uri.EscapeDataString(fallback)}";
+                var client = _httpClientFactory.CreateClient();
+                searchData = await client.GetFromJsonAsync<GatewaySearchResponse>(url, ct).ConfigureAwait(false);
+                if (searchData != null && cfg.EnableSearchCache)
+                {
+                    _searchMemoryCache[cacheKey] = (DateTime.UtcNow.AddMinutes(15), searchData);
+                }
+            }
+
             if (searchData is null) return;
 
             switch (or.Value)
