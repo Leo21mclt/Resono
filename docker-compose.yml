@@ -51,9 +51,7 @@ services:
       - "2234:2234"
 
   resono-gateway:
-    build:
-      context: ./resono-gateway
-      dockerfile: Dockerfile
+    image: ghcr.io/leo21mclt/resono:latest
     container_name: resono-gateway
     restart: unless-stopped
     depends_on:
