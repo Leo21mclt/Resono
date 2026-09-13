@@ -201,11 +201,13 @@ class SlskdClient(SoulseekBackend):
                 for f in all_files:
                     f_name = f.get("filename", "")
                     if f_name == remote_path or f_name.endswith(remote_path.replace("\\", "/").split("/")[-1]):
-                        state = f.get("state", "Unknown")
+                        state = str(f.get("state", "Unknown"))
                         size = f.get("size", 0)
                         bytes_transferred = f.get("bytesTransferred", 0)
-                        is_completed = "succeeded" in state.lower() or "completed" in state.lower()
-                        is_failed = "failed" in state.lower() or "aborted" in state.lower() or "cancelled" in state.lower()
+                        state_lower = state.lower()
+                        is_completed = "succeeded" in state_lower
+                        is_failed = any(w in state_lower for w in ("failed", "aborted", "cancelled", "errored", "rejected", "timedout"))
+                        is_queued = "queued" in state_lower
                         return {
                             "id": f.get("id"),
                             "filename": f_name,
@@ -214,6 +216,7 @@ class SlskdClient(SoulseekBackend):
                             "bytes_transferred": bytes_transferred,
                             "is_completed": is_completed,
                             "is_failed": is_failed,
+                            "is_queued": is_queued,
                             "progress": round(bytes_transferred / size, 3) if size > 0 else 0.0
                         }
         return None

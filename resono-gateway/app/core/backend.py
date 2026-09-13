@@ -38,15 +38,27 @@ class SoulseekBackend(ABC):
         """Cancel an in-flight transfer"""
         pass
 
-def get_soulseek_backend(backend_type: str | None = None) -> SoulseekBackend:
-    from app.config import settings
-    selected = (backend_type or settings.SOULSEEK_BACKEND).lower().strip()
-    if selected == "slskr":
-        from app.slskr.client import SlskrClient
-        return SlskrClient()
-    else:
-        from app.slskd.client import SlskdClient
-        return SlskdClient()
+_backend_instance: SoulseekBackend | None = None
 
-soulseek_backend = get_soulseek_backend()
+def get_soulseek_backend(backend_type: str | None = None) -> SoulseekBackend:
+    global _backend_instance
+    if _backend_instance is None or backend_type is not None:
+        from app.config import settings
+        selected = (backend_type or settings.SOULSEEK_BACKEND).lower().strip()
+        if selected == "slskr":
+            from app.slskr.client import SlskrClient
+            inst = SlskrClient()
+        else:
+            from app.slskd.client import SlskdClient
+            inst = SlskdClient()
+        if backend_type is None:
+            _backend_instance = inst
+        return inst
+    return _backend_instance
+
+class _LazyBackendProxy:
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_soulseek_backend(), name)
+
+soulseek_backend: SoulseekBackend = _LazyBackendProxy()  # type: ignore
 

@@ -149,18 +149,33 @@ class ExactRecordingMatcher:
 
         return ScoredCandidate(candidate=candidate, score=breakdown)
 
-    def find_best_match(self, candidates: list[AudioCandidate], track: CanonicalTrack) -> ScoredCandidate | None:
+    @staticmethod
+    def candidate_rank_key(s: ScoredCandidate):
+        c = s.candidate
+        # 1. Immediate availability: free upload slot AND empty queue is top priority
+        immediate = 1 if (c.slots_free and c.queue_length == 0) else 0
+        # 2. Total match score (FLAC / high bitrate / exact tags)
+        score = s.score.total_score
+        # 3. Penalize long queues
+        queue_penalty = -c.queue_length if c.queue_length < 50 else -50
+        # 4. Upload speed
+        speed = c.upload_speed or 0
+        return (immediate, score, queue_penalty, speed)
+
+    def find_ranked_matches(self, candidates: list[AudioCandidate], track: CanonicalTrack) -> list[ScoredCandidate]:
         scored = [self.score_candidate(c, track) for c in candidates]
         valid = [s for s in scored if not s.score.rejected]
+        valid.sort(key=self.candidate_rank_key, reverse=True)
+        return valid
 
-        if not valid:
+    def find_best_match(self, candidates: list[AudioCandidate], track: CanonicalTrack) -> ScoredCandidate | None:
+        ranked = self.find_ranked_matches(candidates, track)
+        if not ranked:
             logger.warning(f"No confident match found for '{track.title}' by '{track.artist_name}' ({len(candidates)} candidates evaluated)")
             return None
 
-        # Sort by total score descending, then by slots_free, then by upload_speed
-        valid.sort(key=lambda s: (s.score.total_score, s.candidate.slots_free, s.candidate.upload_speed), reverse=True)
-        best = valid[0]
-        logger.info(f"Selected match: score={best.score.total_score} peer={best.candidate.peer_id} file='{best.candidate.remote_path}'")
+        best = ranked[0]
+        logger.info(f"Selected match: score={best.score.total_score} peer={best.candidate.peer_id} file='{best.candidate.remote_path}' (free_slot={best.candidate.slots_free}, queue={best.candidate.queue_length})")
         return best
 
 matcher = ExactRecordingMatcher()

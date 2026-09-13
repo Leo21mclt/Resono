@@ -49,7 +49,6 @@ class AcquisitionManager:
         # -------------------------------------------------------------
         # STEP 1: Fast-Path Check for Known-Good Source Mapping
         # -------------------------------------------------------------
-        best_candidate: AudioCandidate | None = None
         res = await db.execute(
             select(SourceMapping)
             .where(
@@ -59,10 +58,11 @@ class AcquisitionManager:
             )
             .order_by(SourceMapping.confidence_score.desc())
         )
-        known_source = res.scalar_one_or_none()
-        if known_source:
-            logger.info(f"[SOURCE] Found known-good source mapping: peer={known_source.peer} score={known_source.confidence_score}")
-            best_candidate = AudioCandidate(
+        known_sources = list(res.scalars().all())
+
+        for known_source in known_sources:
+            logger.info(f"[SOURCE] Testing known-good source mapping: peer={known_source.peer} score={known_source.confidence_score}")
+            candidate = AudioCandidate(
                 backend=soulseek_backend.name,
                 peer_id=known_source.peer,
                 remote_path=known_source.remote_path,
@@ -72,106 +72,134 @@ class AcquisitionManager:
                 bitrate=known_source.bitrate,
                 codec=known_source.codec or "mp3"
             )
+            final_path = await self._attempt_download_and_cache(candidate, track, db)
+            if final_path:
+                known_source.success_count += 1
+                await db.commit()
+                return final_path
+            else:
+                logger.warning(f"[SOURCE] Known-good source {known_source.peer} failed or stalled; incrementing failure count.")
+                known_source.failure_count += 1
+                await db.commit()
 
         # -------------------------------------------------------------
         # STEP 2: Distributed Search & Exact Matching
         # -------------------------------------------------------------
-        if not best_candidate:
-            search_query = f"{track.artist_name} {track.title}"
-            logger.info(f"[SEARCH] Querying Soulseek network for '{search_query}'...")
-            candidates = await soulseek_backend.search(search_query, timeout_seconds=6)
-            logger.info(f"[SEARCH] Found {len(candidates)} candidate files across network")
+        search_query = f"{track.artist_name} {track.title}"
+        logger.info(f"[SEARCH] Querying Soulseek network for '{search_query}'...")
+        candidates = await soulseek_backend.search(search_query, timeout_seconds=6)
+        logger.info(f"[SEARCH] Found {len(candidates)} candidate files across network")
 
-            matched = matcher.find_best_match(candidates, track)
-            if not matched:
-                logger.warning(f"[MATCH] No candidate met confidence threshold >= {settings.MATCHER_CONFIDENCE_THRESHOLD}")
-                raise FileNotFoundError(f"No confident recording match found on Soulseek for '{track.title}'")
-
-            best_candidate = matched.candidate
-            logger.info(f"[MATCH] Selected peer={best_candidate.peer_id} file='{best_candidate.filename}' score={matched.score.total_score}")
-
-            # Record initial source mapping
-            await cache_manager.record_source_mapping(
-                canonical_id=track.canonical_id,
-                peer=best_candidate.peer_id,
-                remote_path=best_candidate.remote_path,
-                file_size=best_candidate.size_bytes,
-                confidence_score=matched.score.total_score,
-                codec=best_candidate.codec,
-                bitrate=best_candidate.bitrate,
-                duration_ms=best_candidate.duration_ms,
-                db=db
-            )
+        ranked = matcher.find_ranked_matches(candidates, track)
+        if not ranked:
+            logger.warning(f"[MATCH] No candidate met confidence threshold >= {settings.MATCHER_CONFIDENCE_THRESHOLD}")
+            raise FileNotFoundError(f"No confident recording match found on Soulseek for '{track.title}'")
 
         # -------------------------------------------------------------
-        # STEP 3: Enqueue Download & Poll Completion
+        # STEP 3: Multi-Candidate Fallback Loop (try top 3 candidates)
         # -------------------------------------------------------------
-        logger.info(f"[DOWNLOAD] Enqueueing transfer on {soulseek_backend.name} -> peer={best_candidate.peer_id}")
-        enqueued = await soulseek_backend.enqueue_download(best_candidate)
-        if not enqueued:
-            raise RuntimeError(f"Soulseek daemon rejected download for peer {best_candidate.peer_id}")
+        for match_idx, matched in enumerate(ranked[:3], 1):
+            candidate = matched.candidate
+            logger.info(f"[ACQUIRE] Attempting candidate #{match_idx}: peer={candidate.peer_id} file='{candidate.filename}' score={matched.score.total_score} (free_slot={candidate.slots_free}, queue={candidate.queue_length})")
+            final_path = await self._attempt_download_and_cache(candidate, track, db)
+            if final_path:
+                # Record initial source mapping
+                await cache_manager.record_source_mapping(
+                    canonical_id=track.canonical_id,
+                    peer=candidate.peer_id,
+                    remote_path=candidate.remote_path,
+                    file_size=candidate.size_bytes,
+                    confidence_score=matched.score.total_score,
+                    codec=candidate.codec,
+                    bitrate=candidate.bitrate,
+                    duration_ms=candidate.duration_ms,
+                    db=db
+                )
+                return final_path
+            else:
+                logger.warning(f"[ACQUIRE] Candidate #{match_idx} from peer {candidate.peer_id} failed or stalled. Trying next candidate...")
+
+        raise FileNotFoundError(f"Failed to acquire recording for '{track.title}' after trying available candidates.")
+
+    async def _attempt_download_and_cache(self, candidate: AudioCandidate, track: CanonicalTrack, db: AsyncSession) -> Path | None:
+        """Attempt download and validation for a single candidate. Returns Path on success, None on failure."""
+        logger.info(f"[DOWNLOAD] Enqueueing transfer on {soulseek_backend.name} -> peer={candidate.peer_id}")
+        try:
+            enqueued = await soulseek_backend.enqueue_download(candidate)
+            if not enqueued:
+                logger.warning(f"[DOWNLOAD] Daemon rejected transfer for peer {candidate.peer_id}")
+                return None
+        except Exception as e:
+            logger.warning(f"[DOWNLOAD] Exception enqueuing download for {candidate.peer_id}: {e}")
+            return None
 
         # Poll transfer status
-        downloaded_file = await self._await_download_completion(best_candidate, timeout_seconds=60)
+        downloaded_file = await self._await_download_completion(candidate, timeout_seconds=60)
         if not downloaded_file:
-            raise TimeoutError(f"Download timed out or failed on peer {best_candidate.peer_id}")
+            return None
 
-        # -------------------------------------------------------------
-        # STEP 4: Atomic Cache Write & Mutagen Validation
-        # -------------------------------------------------------------
-        codec = best_candidate.codec or downloaded_file.suffix.lstrip(".").lower()
+        # Atomic Cache Write & Mutagen Validation
+        codec = candidate.codec or downloaded_file.suffix.lstrip(".").lower()
         part_path = cache_manager.cache_dir / f"{track.canonical_id}.{codec}.part"
         final_path = cache_manager.cache_dir / f"{track.canonical_id}.{codec}"
 
         try:
-            # Copy to .part path
             shutil.copy2(downloaded_file, part_path)
-
-            # Validate audio integrity
             validation = validate_audio_file(part_path, expected_duration_ms=track.duration_ms)
             if not validation.is_valid:
                 part_path.unlink(missing_ok=True)
-                raise ValueError(f"Downloaded audio failed validation: {validation.error_message}")
+                logger.warning(f"[ACQUIRE] Downloaded audio failed validation: {validation.error_message}")
+                return None
 
-            # Atomic rename: .part -> final
             part_path.replace(final_path)
             logger.info(f"[CACHE] Stored verified audio: {final_path.name} ({validation.file_size} bytes, {validation.duration_seconds:.1f}s)")
-
-            # Register in cache manager DB
             await cache_manager.register_playback(track.canonical_id, final_path, codec, db)
             return final_path
-
         except Exception as e:
             part_path.unlink(missing_ok=True)
-            logger.error(f"[ACQUIRE] Validation or cache write failed: {e}")
-            raise
+            logger.error(f"[ACQUIRE] Cache write error for peer {candidate.peer_id}: {e}")
+            return None
 
     async def _await_download_completion(self, candidate: AudioCandidate, timeout_seconds: int = 60) -> Path | None:
-        """Poll the daemon until the download completes, then locate the file on disk."""
-        elapsed = 0
-        poll_interval = 2
+        """Poll the daemon until download completes, aborting early if queued with no progress."""
+        elapsed = 0.0
+        poll_interval = 1.0
+        consecutive_queued_seconds = 0.0
 
         while elapsed < timeout_seconds:
-            # Check progress on daemon
-            if hasattr(soulseek_backend, "check_download_progress"):
-                progress_info = await soulseek_backend.check_download_progress(candidate.peer_id, candidate.remote_path)
-                if progress_info:
-                    if progress_info.get("is_failed"):
-                        logger.error(f"[DOWNLOAD] Transfer failed on daemon: {progress_info.get('state')}")
-                        return None
-                    if progress_info.get("is_completed"):
-                        logger.info(f"[DOWNLOAD] Transfer marked completed by daemon")
-                        break
-
-            # Also check if file exists directly on disk in downloads folder
-            local_found = self._find_downloaded_file(candidate)
-            if local_found and local_found.stat().st_size >= candidate.size_bytes * 0.95:
-                return local_found
-
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 
-        # Final check for file on disk
+            if hasattr(soulseek_backend, "check_download_progress"):
+                progress_info = await soulseek_backend.check_download_progress(candidate.peer_id, candidate.remote_path)
+                if progress_info:
+                    download_id = progress_info.get("id")
+                    if progress_info.get("is_failed"):
+                        logger.error(f"[DOWNLOAD] Transfer failed on daemon: {progress_info.get('state')}")
+                        if download_id:
+                            await soulseek_backend.cancel_download(download_id, username=candidate.peer_id)
+                        return None
+
+                    if progress_info.get("is_completed"):
+                        logger.info(f"[DOWNLOAD] Transfer marked completed by daemon for {candidate.peer_id}")
+                        break
+
+                    bytes_transferred = progress_info.get("bytes_transferred", 0)
+                    if progress_info.get("is_queued") and bytes_transferred == 0:
+                        consecutive_queued_seconds += poll_interval
+                        if consecutive_queued_seconds >= 8.0:
+                            logger.warning(f"[DOWNLOAD] Peer {candidate.peer_id} stalled in queue ({consecutive_queued_seconds:.0f}s with 0 bytes). Aborting.")
+                            if download_id:
+                                await soulseek_backend.cancel_download(download_id, username=candidate.peer_id)
+                            return None
+                    else:
+                        consecutive_queued_seconds = 0.0
+
+            local_found = self._find_downloaded_file(candidate)
+            if local_found and local_found.stat().st_size > 0:
+                if not candidate.size_bytes or local_found.stat().st_size >= candidate.size_bytes * 0.95:
+                    return local_found
+
         return self._find_downloaded_file(candidate)
 
     def _find_downloaded_file(self, candidate: AudioCandidate) -> Path | None:
