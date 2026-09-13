@@ -24,6 +24,32 @@ namespace Resono.Plugin.Filters
     public class ResonoSearchActionFilter : IAsyncResultFilter
     {
         private static readonly ConcurrentDictionary<string, (DateTime Expires, GatewaySearchResponse Data)> _searchMemoryCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, Task<GatewaySearchResponse?>> _inFlightSearches = new(StringComparer.OrdinalIgnoreCase);
+        private static string? _cachedEffectiveGatewayUrl;
+
+        public static string GetEffectiveGatewayUrl(string? configured)
+        {
+            if (!string.IsNullOrEmpty(_cachedEffectiveGatewayUrl)) return _cachedEffectiveGatewayUrl;
+
+            var url = configured?.TrimEnd('/') ?? "http://localhost:8080";
+            if (url.Contains("localhost") || url.Contains("127.0.0.1"))
+            {
+                try
+                {
+                    using var client = new HttpClient { Timeout = TimeSpan.FromMilliseconds(400) };
+                    var res = client.GetAsync("http://resono-gateway:8080/health").GetAwaiter().GetResult();
+                    if (res.IsSuccessStatusCode)
+                    {
+                        _cachedEffectiveGatewayUrl = "http://resono-gateway:8080";
+                        return _cachedEffectiveGatewayUrl;
+                    }
+                }
+                catch { }
+            }
+
+            _cachedEffectiveGatewayUrl = url;
+            return url;
+        }
 
         private static readonly HashSet<string> MusicTypes = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -117,7 +143,7 @@ namespace Resono.Plugin.Filters
             if (ctx.Result is not ObjectResult or || or.Value is null) return;
 
             var cfg = Plugin.Instance!.Configuration;
-            var gatewayUrl = cfg.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+            var gatewayUrl = GetEffectiveGatewayUrl(cfg.GatewayUrl);
             var provider = !string.IsNullOrWhiteSpace(cfg.CatalogProvider) ? cfg.CatalogProvider : "apple";
             var fallback = !string.IsNullOrWhiteSpace(cfg.FallbackCatalogProvider) ? cfg.FallbackCatalogProvider : "deezer";
             var limit = cfg.SearchLimit > 0 ? cfg.SearchLimit : 20;
@@ -131,13 +157,31 @@ namespace Resono.Plugin.Filters
             }
             else
             {
-                var url = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(term)}&limit={limit}&provider={Uri.EscapeDataString(provider)}&fallback={Uri.EscapeDataString(fallback)}";
-                var client = _httpClientFactory.CreateClient();
-                searchData = await client.GetFromJsonAsync<GatewaySearchResponse>(url, ct).ConfigureAwait(false);
-                if (searchData != null && cfg.EnableSearchCache)
+                var fetchTask = _inFlightSearches.GetOrAdd(cacheKey, async key =>
                 {
-                    _searchMemoryCache[cacheKey] = (DateTime.UtcNow.AddMinutes(15), searchData);
-                }
+                    try
+                    {
+                        var url = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(term)}&limit={limit}&provider={Uri.EscapeDataString(provider)}&fallback={Uri.EscapeDataString(fallback)}";
+                        var client = _httpClientFactory.CreateClient();
+                        var data = await client.GetFromJsonAsync<GatewaySearchResponse>(url, ct).ConfigureAwait(false);
+                        if (data != null && cfg.EnableSearchCache)
+                        {
+                            _searchMemoryCache[key] = (DateTime.UtcNow.AddMinutes(15), data);
+                        }
+                        return data;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to query gateway search: {Message}", ex.Message);
+                        return null;
+                    }
+                    finally
+                    {
+                        _inFlightSearches.TryRemove(key, out _);
+                    }
+                });
+
+                searchData = await fetchTask.ConfigureAwait(false);
             }
 
             if (searchData is null) return;

@@ -383,7 +383,7 @@ namespace Resono.Plugin.Filters
             try
             {
                 var cfg = Plugin.Instance!.Configuration;
-                var gatewayUrl = cfg.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var idParam = !string.IsNullOrEmpty(artistEntry.SpotifyId) ? artistEntry.SpotifyId : artistEntry.Name;
                 var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam)}/albums";
 
@@ -447,7 +447,7 @@ namespace Resono.Plugin.Filters
             try
             {
                 var cfg = Plugin.Instance!.Configuration;
-                var gatewayUrl = cfg.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var idParam = !string.IsNullOrEmpty(artistEntry.SpotifyId) ? artistEntry.SpotifyId : artistEntry.Name;
                 var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam)}/top";
 
@@ -525,7 +525,7 @@ namespace Resono.Plugin.Filters
             try
             {
                 var cfg = Plugin.Instance!.Configuration;
-                var gatewayUrl = cfg.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var idParam = !string.IsNullOrEmpty(artistEntry.SpotifyId) ? artistEntry.SpotifyId : artistEntry.Name;
                 var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam ?? "")}/similar";
 
@@ -561,7 +561,7 @@ namespace Resono.Plugin.Filters
             try
             {
                 var cfg = Plugin.Instance!.Configuration;
-                var gatewayUrl = cfg.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var url = $"{gatewayUrl}/jellyfin/charts/{Uri.EscapeDataString(chartId)}/tracks";
 
                 var client = _httpClientFactory.CreateClient();
@@ -606,7 +606,7 @@ namespace Resono.Plugin.Filters
             try
             {
                 var cfg = Plugin.Instance!.Configuration;
-                var gatewayUrl = cfg.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var url = $"{gatewayUrl}/jellyfin/album/{Uri.EscapeDataString(albumEntry.SpotifyId)}";
 
                 var client = _httpClientFactory.CreateClient();
@@ -657,7 +657,7 @@ namespace Resono.Plugin.Filters
                 var cfg = Plugin.Instance!.Configuration;
                 if (!cfg.EnableSyncedLyrics || string.IsNullOrEmpty(trackEntry.Name) || string.IsNullOrEmpty(trackEntry.ArtistName)) return null;
 
-                var gatewayUrl = cfg.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var durSec = trackEntry.DurationMs.HasValue ? trackEntry.DurationMs.Value / 1000 : 0;
                 var url = $"{gatewayUrl}/jellyfin/lyrics?artist={Uri.EscapeDataString(trackEntry.ArtistName)}&title={Uri.EscapeDataString(trackEntry.Name)}&duration={durSec}";
 
@@ -721,7 +721,7 @@ namespace Resono.Plugin.Filters
                 var cfg = Plugin.Instance!.Configuration;
                 if (!cfg.EnableVirtualPlaylists) return list;
 
-                var gatewayUrl = cfg.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var country = !string.IsNullOrWhiteSpace(cfg.ChartCountryCode) ? cfg.ChartCountryCode : "PE";
                 var url = $"{gatewayUrl}/jellyfin/charts?country={Uri.EscapeDataString(country)}";
 
@@ -756,7 +756,7 @@ namespace Resono.Plugin.Filters
             try
             {
                 var cfg = Plugin.Instance!.Configuration;
-                var gatewayUrl = cfg.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var url = $"{gatewayUrl}/jellyfin/pin/{Uri.EscapeDataString(trackId)}";
                 var client = _httpClientFactory.CreateClient();
                 await client.PostAsync(url, null).ConfigureAwait(false);
