@@ -12,14 +12,14 @@ Jellyfin Web / Mobile Clients
         Resono Gateway
        ┌──────┴──────┐
        ▼             ▼
- Spotify Metadata   Existing Production slskd (Host)
+ Spotify Metadata   slskd (Same Compose Project)
     (SpotAPI)     (Soulseek Network)
 ```
 
 ## Architecture & Features
 
 - **Metadata Provider**: Zero-credential Spotify catalog search, artist metadata, album tracklists, and artwork powered by `spotapi 1.2.8` (with optional iTunes fallback).
-- **Decentralized Audio Backend**: Integrates with the existing production Soulseek daemon (`slskd`).
+- **Decentralized Audio Backend**: Integrates directly with the existing `slskd` service in the same Docker Compose project.
 - **Acquisition Engine**: Asynchronous state machine: `QUEUED` -> `SEARCHING` -> `MATCHED` -> `DOWNLOADING` -> `VALIDATING` -> `COMPLETED`.
 - **Audio Validation**: Rigorous forensic inspection using `mutagen` for header integrity, minimum audio length, and metadata duration tolerance matching.
 - **Atomic Operations**: Downloads written to `.part` files and moved atomically upon verification.
@@ -50,7 +50,7 @@ Resono/
 │   ├── Providers/               # IMediaSourceProvider & IRemoteSearchProvider
 │   ├── Plugin.cs                # Jellyfin plugin entrypoint
 │   └── Resono.Plugin.csproj     # C# Project definition
-├── docker-compose.yml           # Production Compose stack (Dokploy compatible)
+├── docker-compose.yml           # Compose service definition (for existing stack)
 ├── .env.example                 # Production environment variable template
 ├── .dockerignore                # Docker build exclusions
 ├── .gitignore                   # Git repository exclusions
@@ -59,27 +59,37 @@ Resono/
 
 ---
 
-## Deployment with Dokploy
+## Production Deployment (Dokploy)
 
-This repository deploys the **Resono Gateway** as a standalone service via Docker Compose in [Dokploy](https://dokploy.com/).
+The root `docker-compose.yml` integrates the entire production stack into a single Dokploy Compose project (`music-stack-jellyfinmediaserver-q8vogu`):
 
-### Production Architecture & slskd Integration
-- **Existing slskd Daemon**: Resono does **not** deploy a duplicate Soulseek container. It integrates directly with your existing production `slskd` instance in the `music-stack-jellyfinmediaserver-q8vogu` stack.
-- **Daemon API Communication**: The Gateway communicates with the host `slskd` API via `http://host.docker.internal:5030` (enabled on Linux using `extra_hosts: ["host.docker.internal:host-gateway"]`).
-- **Download Filesystem Access**: The Gateway mounts the existing production `slskd` download volume as a **read-only bind mount**:
-  - **Host Path**: `/var/lib/docker/volumes/music-stack-jellyfinmediaserver-q8vogu_slskd-downloads/_data`
-  - **Container Mount**: `/downloads:ro`
-- **Acquisition Lifecycle**: `slskd` downloads audio into its volume; Resono Gateway reads completed files from `/downloads`, validates audio integrity via `mutagen`, and atomically copies verified audio into its local cache (`resono-cache`).
+- `jellyfin`: Jellyfin media server (`8096:8096`)
+- `ytmusic-stream-server`: Legacy discovery stream server (`8081:8081`)
+- `slskd`: Soulseek acquisition daemon (`5030:5030`, `2234:2234`)
+- `resono-gateway`: Resono virtual gateway and cache manager (`8080:8080`)
 
-### 1. In Dokploy Dashboard
-1. Create a new **Compose** application pointing to your GitHub repository.
-2. In the **Environment** tab, configure the environment variables based on `.env.example`:
-   - `RESONO_SLSKD_URL`: `http://host.docker.internal:5030`
-   - `RESONO_PORT`: `8080` (default)
-3. Click **Deploy**.
+### Architecture & Coexistence Guarantees
+- **No Duplicate slskd**: Resono communicates directly with the single production `slskd` container via internal Compose networking at `http://slskd:5030`.
+- **Shared Volume Access**: The Gateway mounts the project's `slskd-downloads` volume **read-only**:
+  ```yaml
+  volumes:
+    - slskd-downloads:/downloads:ro
+  ```
+- **Gateway Persistence**: The Gateway maintains its own isolated persistent database and audio cache:
+  ```yaml
+  volumes:
+    - resono-data:/app/data
+    - resono-cache:/app/cache
+  ```
+- **Acquisition Lifecycle**: `slskd` downloads audio into `slskd-downloads` (`/app/downloads`); Resono Gateway reads completed files from `/downloads:ro`, forensically validates audio integrity via `mutagen`, and atomically copies verified audio into `resono-cache`.
+- **Zero Disruption**: Existing services (`jellyfin`, `slskd`, `ytmusic-stream-server`) are preserved and continue operating normally.
 
-### 2. Networking & Ports
-- **Resono Gateway**: Port `8080` is published to the host (`8080:8080`) so your existing Jellyfin server can query virtual search and stream audio.
+### Configuration
+In Dokploy (or your `.env` file):
+- `RESONO_SLSKD_URL`: `http://slskd:5030`
+- `SLSKD_SLSK_USERNAME`: Your Soulseek username
+- `SLSKD_SLSK_PASSWORD`: Your Soulseek password
+- `RESONO_PORT`: `8080` (default)
 
 ---
 
@@ -95,7 +105,7 @@ This repository deploys the **Resono Gateway** as a standalone service via Docke
    docker restart jellyfin
    ```
 3. In Jellyfin Web UI, navigate to **Dashboard** -> **Plugins** -> **Resono**.
-4. Configure the **Gateway URL** (e.g., `http://<your-gateway-host>:8080`) and save.
+4. Configure the **Gateway URL** (e.g., `http://<gateway-ip>:8080` or `http://resono-gateway:8080`) and save.
 
 ---
 

@@ -1,17 +1,68 @@
-version: "3.8"
-
 services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    ports:
+      - "8096:8096"
+    volumes:
+      - ../files/jellyfin-config:/config
+      - ../files/jellyfin-cache:/cache
+      - ../files/test-music:/media/music
+    restart: unless-stopped
+
+  ytmusic-stream-server:
+    image: python:3.11-slim
+    container_name: ytmusic-stream-server
+    restart: unless-stopped
+    command: >
+      bash -c "
+      set -e &&
+      dpkg --configure -a || true &&
+      apt-get update &&
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg git curl ca-certificates unzip &&
+      curl -fsSL https://deno.land/install.sh | sh &&
+      export PATH=/root/.deno/bin:\$PATH &&
+      deno --version &&
+      rm -rf /music-repo &&
+      git clone https://github.com/Leo21mclt/JellyMusicDiscovery.git /music-repo &&
+      cd /music-repo/ytmusic-stream-server &&
+      pip install --no-cache-dir -r requirements.txt &&
+      cp /app/cookies.txt /tmp/cookies.txt || true &&
+      python server.py
+      "
+    ports:
+      - "8081:8081"
+    volumes:
+      - ../files/ytmusic-cookies:/app:ro
+
+  slskd:
+    image: slskd/slskd:latest
+    container_name: slskd
+    restart: unless-stopped
+    environment:
+      - SLSKD_NO_AUTH=true
+      - SLSKD_SLSK_USERNAME=${SLSKD_SLSK_USERNAME:-}
+      - SLSKD_SLSK_PASSWORD=${SLSKD_SLSK_PASSWORD:-}
+    volumes:
+      - slskd-config:/app
+      - slskd-downloads:/app/downloads
+    ports:
+      - "5030:5030"
+      - "2234:2234"
+
   resono-gateway:
     build:
       context: ./resono-gateway
       dockerfile: Dockerfile
     container_name: resono-gateway
     restart: unless-stopped
+    depends_on:
+      - slskd
     environment:
       - RESONO_HOST=0.0.0.0
       - RESONO_PORT=8080
       - RESONO_SOULSEEK_BACKEND=slskd
-      - RESONO_SLSKD_URL=${RESONO_SLSKD_URL:-http://host.docker.internal:5030}
+      - RESONO_SLSKD_URL=${RESONO_SLSKD_URL:-http://slskd:5030}
       - RESONO_SLSKD_API_KEY=${RESONO_SLSKD_API_KEY:-}
       - RESONO_SLSKD_DOWNLOADS_PATH=/downloads
       - RESONO_MAX_CACHE_SIZE_GB=${RESONO_MAX_CACHE_SIZE_GB:-50.0}
@@ -19,12 +70,10 @@ services:
       - RESONO_MATCHER_CONFIDENCE_THRESHOLD=${RESONO_MATCHER_CONFIDENCE_THRESHOLD:-0.80}
       - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - resono-data:/app/data
       - resono-cache:/app/cache
-      - /var/lib/docker/volumes/music-stack-jellyfinmediaserver-q8vogu_slskd-downloads/_data:/downloads:ro
+      - slskd-downloads:/downloads:ro
     ports:
       - "8080:8080"
     healthcheck:
@@ -35,5 +84,7 @@ services:
       start_period: 15s
 
 volumes:
+  slskd-config:
+  slskd-downloads:
   resono-data:
   resono-cache:
