@@ -43,3 +43,11 @@ def test_jellyfin_telemetry():
     assert response.status_code == 200
     assert response.json()["status"] in ("updated", "acknowledged")
 
+def test_jellyfin_charts():
+    response = client.get("/jellyfin/charts?country=PE")
+    assert response.status_code == 200
+    data = response.json()
+    assert "charts" in data
+    assert len(data["charts"]) >= 2
+    assert any("PE" in c["name"] for c in data["charts"])
+

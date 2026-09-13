@@ -111,6 +111,84 @@ class DeezerProvider(CatalogProvider):
             logger.error(f"Deezer get_artist failed for '{artist_id}': {e}")
             return None
 
+    async def get_artist_top_tracks(self, artist_id: str, limit: int = 10) -> list[CatalogTrack]:
+        raw_id = artist_id.replace("deezer:artist:", "")
+        try:
+            async with self._get_client() as client:
+                res = await client.get(f"/artist/{raw_id}/top", params={"limit": limit})
+                res.raise_for_status()
+                data = res.json()
+            items = data.get("data", [])
+            tracks: list[CatalogTrack] = []
+            for it in items:
+                art_data = it.get("artist", {})
+                alb_data = it.get("album", {})
+                cover = alb_data.get("cover_xl") or alb_data.get("cover_big")
+                tracks.append(CatalogTrack(
+                    id=f"deezer:track:{it.get('id')}",
+                    title=it.get("title", ""),
+                    artist_name=art_data.get("name", "Unknown Artist"),
+                    artist_id=f"deezer:artist:{art_data.get('id', raw_id)}",
+                    album_title=alb_data.get("title", "Unknown Album"),
+                    album_id=f"deezer:album:{alb_data.get('id', '')}",
+                    duration_ms=it.get("duration", 0) * 1000,
+                    disc_number=it.get("disk_number", 1),
+                    track_number=it.get("track_position", 1),
+                    isrc=it.get("isrc"),
+                    artwork_url=cover,
+                    explicit=bool(it.get("explicit_lyrics", False))
+                ))
+            return tracks
+        except Exception as e:
+            logger.error(f"Deezer get_artist_top_tracks failed for '{artist_id}': {e}")
+            return []
+
+    async def get_artist_albums(self, artist_id: str, limit: int = 50) -> list[CatalogAlbum]:
+        raw_id = artist_id.replace("deezer:artist:", "")
+        try:
+            async with self._get_client() as client:
+                res = await client.get(f"/artist/{raw_id}/albums", params={"limit": limit})
+                res.raise_for_status()
+                data = res.json()
+            items = data.get("data", [])
+            albums: list[CatalogAlbum] = []
+            for it in items:
+                cover = it.get("cover_xl") or it.get("cover_big")
+                albums.append(CatalogAlbum(
+                    id=f"deezer:album:{it.get('id')}",
+                    title=it.get("title", "Unknown Album"),
+                    artist_name=it.get("artist", {}).get("name", ""),
+                    artist_id=f"deezer:artist:{raw_id}",
+                    release_date=it.get("release_date"),
+                    total_tracks=it.get("nb_tracks", 1),
+                    artwork_url=cover
+                ))
+            return albums
+        except Exception as e:
+            logger.error(f"Deezer get_artist_albums failed for '{artist_id}': {e}")
+            return []
+
+    async def get_artist_related(self, artist_id: str, limit: int = 10) -> list[CatalogArtist]:
+        raw_id = artist_id.replace("deezer:artist:", "")
+        try:
+            async with self._get_client() as client:
+                res = await client.get(f"/artist/{raw_id}/related", params={"limit": limit})
+                res.raise_for_status()
+                data = res.json()
+            items = data.get("data", [])
+            artists: list[CatalogArtist] = []
+            for it in items:
+                pic = it.get("picture_xl") or it.get("picture_big")
+                artists.append(CatalogArtist(
+                    id=f"deezer:artist:{it.get('id')}",
+                    name=it.get("name", "Unknown Artist"),
+                    artwork_url=pic
+                ))
+            return artists
+        except Exception as e:
+            logger.error(f"Deezer get_artist_related failed for '{artist_id}': {e}")
+            return []
+
     async def get_album(self, album_id: str) -> tuple[CatalogAlbum, list[CatalogTrack]] | None:
         raw_id = album_id.replace("deezer:album:", "")
         try:
@@ -190,3 +268,48 @@ class DeezerProvider(CatalogProvider):
         except Exception as e:
             logger.error(f"Deezer get_track failed for '{track_id}': {e}")
             return None
+
+    async def get_chart_tracks(self, chart_type: str = "global", limit: int = 50) -> list[CatalogTrack]:
+        try:
+            async with self._get_client() as client:
+                if chart_type == "global":
+                    url = f"/chart/0/tracks?limit={limit}"
+                elif chart_type.isdigit():
+                    url = f"/playlist/{chart_type}/tracks?limit={limit}"
+                else:
+                    # Search playlist for country (e.g. Top Peru, Top USA)
+                    s = await client.get("/search/playlist", params={"q": f"Top {chart_type}", "limit": 1})
+                    s_data = s.json().get("data", [])
+                    if s_data:
+                        url = f"/playlist/{s_data[0]['id']}/tracks?limit={limit}"
+                    else:
+                        url = f"/chart/0/tracks?limit={limit}"
+
+                res = await client.get(url)
+                res.raise_for_status()
+                data = res.json()
+
+            items = data.get("data", [])
+            tracks: list[CatalogTrack] = []
+            for it in items:
+                art_data = it.get("artist", {})
+                alb_data = it.get("album", {})
+                cover = alb_data.get("cover_xl") or alb_data.get("cover_big")
+                tracks.append(CatalogTrack(
+                    id=f"deezer:track:{it.get('id')}",
+                    title=it.get("title", ""),
+                    artist_name=art_data.get("name", "Unknown Artist"),
+                    artist_id=f"deezer:artist:{art_data.get('id', '')}",
+                    album_title=alb_data.get("title", "Top Chart"),
+                    album_id=f"deezer:album:{alb_data.get('id', '')}",
+                    duration_ms=it.get("duration", 0) * 1000,
+                    disc_number=1,
+                    track_number=len(tracks) + 1,
+                    isrc=it.get("isrc"),
+                    artwork_url=cover,
+                    explicit=bool(it.get("explicit_lyrics", False))
+                ))
+            return tracks
+        except Exception as e:
+            logger.error(f"Deezer get_chart_tracks failed for '{chart_type}': {e}")
+            return []

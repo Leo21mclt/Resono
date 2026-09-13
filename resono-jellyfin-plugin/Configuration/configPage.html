@@ -79,6 +79,41 @@
                     </div>
 
                     <div class="resono-card">
+                        <h2>Discovery Charts & Synced Lyrics</h2>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label class="emby-checkbox-label">
+                                <input id="enableVirtualPlaylists" name="enableVirtualPlaylists" type="checkbox" is="emby-checkbox" />
+                                <span>Enable Virtual Discovery Playlists</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">Injects live Top 50 Global, Top 50 Country, and Trending charts into your Jellyfin "Playlists" and "Suggestions" tabs.</div>
+                        </div>
+
+                        <div class="selectContainer" style="margin-top: 15px;">
+                            <label class="selectLabel" for="chartCountryCode">Top Charts Country</label>
+                            <select id="chartCountryCode" name="chartCountryCode" is="emby-select" class="emby-select-withcolor emby-select">
+                                <option value="PE">Peru (Top 50 Perú)</option>
+                                <option value="US">United States (Top 50 USA)</option>
+                                <option value="ES">Spain (Top 50 España)</option>
+                                <option value="MX">Mexico (Top 50 México)</option>
+                                <option value="AR">Argentina (Top 50 Argentina)</option>
+                                <option value="CO">Colombia (Top 50 Colombia)</option>
+                                <option value="CL">Chile (Top 50 Chile)</option>
+                                <option value="GB">United Kingdom (Top 50 UK)</option>
+                            </select>
+                            <div class="fieldDescription">Select which country's official chart playlist to inject into your music library.</div>
+                        </div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top: 15px;">
+                            <label class="emby-checkbox-label">
+                                <input id="enableSyncedLyrics" name="enableSyncedLyrics" type="checkbox" is="emby-checkbox" />
+                                <span>Enable Real-Time Synced Karaoke Lyrics (LrcLib)</span>
+                            </label>
+                            <div class="fieldDescription checkboxFieldDescription">Fetch synchronized millisecond-accurate lyrics for playing tracks on Jellyfin Web and mobile apps.</div>
+                        </div>
+                    </div>
+
+                    <div class="resono-card">
                         <h2>Search & Playback Performance</h2>
 
                         <div class="inputContainer">
@@ -140,6 +175,9 @@
                     document.querySelector('#gatewayUrl').value = config.GatewayUrl || 'http://localhost:8080';
                     document.querySelector('#catalogProvider').value = config.CatalogProvider || 'apple';
                     document.querySelector('#fallbackCatalogProvider').value = config.FallbackCatalogProvider || 'deezer';
+                    document.querySelector('#enableVirtualPlaylists').checked = config.EnableVirtualPlaylists !== false;
+                    document.querySelector('#chartCountryCode').value = config.ChartCountryCode || 'PE';
+                    document.querySelector('#enableSyncedLyrics').checked = config.EnableSyncedLyrics !== false;
                     document.querySelector('#searchLimit').value = config.SearchLimit || 20;
                     document.querySelector('#enableSearchCache').checked = config.EnableSearchCache !== false;
                     document.querySelector('#enableDirectPlay').checked = config.EnableDirectPlay !== false;
@@ -155,6 +193,9 @@
                     config.GatewayUrl = document.querySelector('#gatewayUrl').value;
                     config.CatalogProvider = document.querySelector('#catalogProvider').value;
                     config.FallbackCatalogProvider = document.querySelector('#fallbackCatalogProvider').value;
+                    config.EnableVirtualPlaylists = document.querySelector('#enableVirtualPlaylists').checked;
+                    config.ChartCountryCode = document.querySelector('#chartCountryCode').value;
+                    config.EnableSyncedLyrics = document.querySelector('#enableSyncedLyrics').checked;
                     config.SearchLimit = parseInt(document.querySelector('#searchLimit').value, 10) || 20;
                     config.EnableSearchCache = document.querySelector('#enableSearchCache').checked;
                     config.EnableDirectPlay = document.querySelector('#enableDirectPlay').checked;

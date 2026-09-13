@@ -10,6 +10,9 @@ namespace Resono.Plugin.Configuration
         public bool EnableDirectPlay { get; set; } = true;
         public bool EnableSearchInjection { get; set; } = true;
         public bool EnableSearchCache { get; set; } = true;
+        public bool EnableVirtualPlaylists { get; set; } = true;
+        public bool EnableSyncedLyrics { get; set; } = true;
+        public string ChartCountryCode { get; set; } = "PE";
         public int SearchLimit { get; set; } = 20;
         public int PrefetchBufferTracks { get; set; } = 2;
 

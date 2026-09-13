@@ -347,6 +347,137 @@ async def jellyfin_playback_telemetry(payload: dict[str, Any], db: AsyncSession 
 
     return {"status": "acknowledged"}
 
+@app.get("/jellyfin/artist/{artist_id:path}/top")
+async def jellyfin_artist_top_tracks(artist_id: str, limit: int = Query(10, ge=1, le=50)):
+    """Deliver top tracks for an artist."""
+    tracks = await catalog_manager.get_artist_top_tracks(artist_id, limit=limit)
+    return {
+        "tracks": [
+            {
+                "id": t.id,
+                "canonicalId": catalog_manager.to_canonical_track(t).canonical_id,
+                "name": t.title,
+                "artistName": t.artist_name,
+                "albumName": t.album_title,
+                "durationMs": t.duration_ms,
+                "trackNumber": t.track_number,
+                "discNumber": t.disc_number,
+                "imageUrl": t.artwork_url,
+                "streamUrl": f"/playback/{t.id}"
+            }
+            for t in tracks
+        ]
+    }
+
+@app.get("/jellyfin/artist/{artist_id:path}/albums")
+async def jellyfin_artist_albums(artist_id: str, limit: int = Query(50, ge=1, le=100)):
+    """Deliver discography albums for an artist."""
+    albums = await catalog_manager.get_artist_albums(artist_id, limit=limit)
+    return {
+        "albums": [
+            {
+                "id": al.id,
+                "name": al.title,
+                "artistName": al.artist_name,
+                "releaseDate": al.release_date,
+                "imageUrl": al.artwork_url,
+                "totalTracks": al.total_tracks
+            }
+            for al in albums
+        ]
+    }
+
+@app.get("/jellyfin/artist/{artist_id:path}/similar")
+async def jellyfin_artist_similar(artist_id: str, limit: int = Query(10, ge=1, le=30)):
+    """Deliver similar artists."""
+    artists = await catalog_manager.get_artist_related(artist_id, limit=limit)
+    return {
+        "artists": [
+            {
+                "id": a.id,
+                "name": a.name,
+                "imageUrl": a.artwork_url
+            }
+            for a in artists
+        ]
+    }
+
+@app.get("/jellyfin/charts")
+async def jellyfin_get_charts(country: str = Query("PE")):
+    """Return available virtual discovery playlists (Global, country-specific, trending)."""
+    return {
+        "charts": [
+            {
+                "id": "global",
+                "name": "Top 50 Global",
+                "description": "The most played tracks in the world right now.",
+                "imageUrl": "https://e-cdns-images.dzcdn.net/images/playlist/1afd90d72ffbcb336d228e57300a9130/500x500-000000-80-0-0.jpg"
+            },
+            {
+                "id": country.upper(),
+                "name": f"Top 50 {country.upper()}",
+                "description": f"The hottest tracks trending in {country.upper()} today.",
+                "imageUrl": "https://e-cdns-images.dzcdn.net/images/playlist/854e1a7beebfb6a9331b56680f4a14ef/500x500-000000-80-0-0.jpg"
+            },
+            {
+                "id": "trending",
+                "name": "Trending & Discover",
+                "description": "Weekly trending fresh discoveries.",
+                "imageUrl": "https://e-cdns-images.dzcdn.net/images/playlist/3c19a82aeffd2f6f6adb63c4d8548e06/500x500-000000-80-0-0.jpg"
+            }
+        ]
+    }
+
+@app.get("/jellyfin/charts/{chart_id}/tracks")
+async def jellyfin_get_chart_tracks(chart_id: str, limit: int = Query(50, ge=1, le=100)):
+    """Deliver tracks for a given chart."""
+    tracks = await catalog_manager.get_chart_tracks(chart_type=chart_id, limit=limit)
+    return {
+        "tracks": [
+            {
+                "id": t.id,
+                "canonicalId": catalog_manager.to_canonical_track(t).canonical_id,
+                "name": t.title,
+                "artistName": t.artist_name,
+                "albumName": t.album_title,
+                "durationMs": t.duration_ms,
+                "trackNumber": t.track_number,
+                "discNumber": t.disc_number,
+                "imageUrl": t.artwork_url,
+                "streamUrl": f"/playback/{t.id}"
+            }
+            for t in tracks
+        ]
+    }
+
+@app.get("/jellyfin/lyrics")
+async def jellyfin_get_lyrics(
+    artist: str = Query(...),
+    title: str = Query(...),
+    album: str | None = Query(None),
+    duration: int | None = Query(None)
+):
+    """Deliver synced LRC lyrics from LrcLib with caching."""
+    lyrics = await catalog_manager.get_lyrics(artist, title, album, duration)
+    if not lyrics:
+        raise HTTPException(status_code=404, detail="Lyrics not found")
+    return lyrics
+
+@app.post("/jellyfin/pin/{track_id:path}")
+async def jellyfin_pin_track(track_id: str, db: AsyncSession = Depends(get_db)):
+    """Pin a track in cache permanently (exempt from LRU eviction) when favorited."""
+    canonical_id = deterministic_guid(track_id)
+    from sqlalchemy import select
+    from app.db.models import CacheEntry
+    res = await db.execute(select(CacheEntry).where(CacheEntry.track_id == canonical_id))
+    entry = res.scalar_one_or_none()
+    if entry:
+        entry.tier = "PROTECTED"
+        entry.retention_score += 10000.0
+        await db.commit()
+        return {"status": "pinned", "trackId": canonical_id}
+    return {"status": "acknowledged"}
+
 @app.get("/plugin/Resono.Plugin.dll")
 async def download_plugin_dll():
     """Serve the compiled Jellyfin plugin DLL for one-command installation."""

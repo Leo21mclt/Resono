@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import time
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -141,6 +141,57 @@ class CatalogManager:
             res = await prov.get_track(track_id)
             if res:
                 return res
+        return None
+
+    async def get_artist_top_tracks(self, artist_id: str, limit: int = 10) -> list[CatalogTrack]:
+        deezer = self.providers["deezer"]
+        if hasattr(deezer, "get_artist_top_tracks"):
+            res = await deezer.get_artist_top_tracks(artist_id, limit=limit)
+            if res:
+                return res
+        return []
+
+    async def get_artist_albums(self, artist_id: str, limit: int = 50) -> list[CatalogAlbum]:
+        deezer = self.providers["deezer"]
+        if hasattr(deezer, "get_artist_albums"):
+            res = await deezer.get_artist_albums(artist_id, limit=limit)
+            if res:
+                return res
+        return []
+
+    async def get_artist_related(self, artist_id: str, limit: int = 10) -> list[CatalogArtist]:
+        deezer = self.providers["deezer"]
+        if hasattr(deezer, "get_artist_related"):
+            return await deezer.get_artist_related(artist_id, limit=limit)
+        return []
+
+    async def get_chart_tracks(self, chart_type: str = "global", limit: int = 50) -> list[CatalogTrack]:
+        deezer = self.providers["deezer"]
+        if hasattr(deezer, "get_chart_tracks"):
+            return await deezer.get_chart_tracks(chart_type=chart_type, limit=limit)
+        return []
+
+    async def get_lyrics(self, artist: str, title: str, album: str | None = None, duration_sec: int | None = None) -> dict | None:
+        cache_key = f"lyrics:{artist.lower()}:{title.lower()}"
+        if cache_key in self._cache:
+            exp, cached = self._cache[cache_key]
+            if time.time() < exp:
+                return cached
+        try:
+            import httpx
+            params = {"artist_name": artist, "track_name": title}
+            if album:
+                params["album_name"] = album
+            if duration_sec:
+                params["duration"] = duration_sec
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                res = await client.get("https://lrclib.net/api/get", params=params)
+                if res.status_code == 200:
+                    data = res.json()
+                    self._cache[cache_key] = (time.time() + 86400, data)
+                    return data
+        except Exception as e:
+            logger.warning(f"LrcLib fetch error for '{artist} - {title}': {e}")
         return None
 
     def to_canonical_track(self, track: CatalogTrack) -> CanonicalTrack:
