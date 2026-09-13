@@ -285,6 +285,26 @@ namespace Resono.Plugin.Filters
                             ArtistId = artistId
                         };
                         _cache.Set(id, entry);
+                        if (albumId.HasValue && !string.IsNullOrEmpty(t.AlbumName))
+                        {
+                            _cache.Set(albumId.Value, new ResonoItemCache.Entry
+                            {
+                                Kind = "album",
+                                Name = t.AlbumName,
+                                ArtistName = t.ArtistName,
+                                ImageUrl = t.ImageUrl,
+                                ArtistId = artistId
+                            });
+                        }
+                        if (artistId.HasValue && !string.IsNullOrEmpty(t.ArtistName))
+                        {
+                            _cache.Set(artistId.Value, new ResonoItemCache.Entry
+                            {
+                                Kind = "artist",
+                                Name = t.ArtistName,
+                                ImageUrl = t.ImageUrl
+                            });
+                        }
                         additions.Add(BuildTrackDto(id, entry));
                     }
                 }
@@ -348,6 +368,9 @@ namespace Resono.Plugin.Filters
                 ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new() } },
                 PrimaryImageAspectRatio = 1.0,
                 IsFolder = true,
+                ChildCount = 50,
+                SongCount = 50,
+                AlbumCount = 20,
             };
         }
 
@@ -379,6 +402,40 @@ namespace Resono.Plugin.Filters
             };
         }
 
+        public static MediaSourceInfo BuildMediaSource(Guid id, ResonoItemCache.Entry e)
+        {
+            var idStr = id.ToString("N");
+            return new MediaSourceInfo
+            {
+                Id = idStr,
+                Path = $"/Audio/{idStr}/universal?MediaSourceId={idStr}",
+                Protocol = MediaProtocol.Http,
+                IsRemote = false,
+                Name = e.Name ?? "Track",
+                Container = "mp3",
+                SupportsTranscoding = false,
+                SupportsDirectStream = true,
+                SupportsDirectPlay = false,
+                RequiresOpening = false,
+                RequiresClosing = false,
+                RunTimeTicks = e.DurationMs.HasValue ? (long)e.DurationMs.Value * 10000 : null,
+                MediaStreams = new List<MediaBrowser.Model.Entities.MediaStream>
+                {
+                    new MediaBrowser.Model.Entities.MediaStream
+                    {
+                        Codec = "mp3",
+                        Type = MediaStreamType.Audio,
+                        Index = 0,
+                        IsDefault = true,
+                        BitRate = 320000,
+                        SampleRate = 44100,
+                        Channels = 2
+                    }
+                },
+                RequiredHttpHeaders = new Dictionary<string, string>()
+            };
+        }
+
         public static BaseItemDto BuildTrackDto(Guid id, ResonoItemCache.Entry e)
         {
             var imageTag = "resono-" + id.ToString("N");
@@ -390,21 +447,7 @@ namespace Resono.Plugin.Filters
                 artistPair = new[] { new NameGuidPair { Name = e.ArtistName, Id = e.ArtistId ?? ResonoItemCache.DeterministicGuid("artist:" + e.ArtistName) } };
             }
 
-            var mediaSource = new MediaSourceInfo
-            {
-                Id = id.ToString("N"),
-                Path = e.StreamUrl ?? "",
-                Protocol = MediaProtocol.Http,
-                IsRemote = true,
-                Name = e.Name ?? "Track",
-                Container = "flac",
-                SupportsTranscoding = true,
-                SupportsDirectStream = true,
-                SupportsDirectPlay = false,
-                RunTimeTicks = e.DurationMs.HasValue ? (long)e.DurationMs.Value * 10000 : null,
-                MediaStreams = new List<MediaBrowser.Model.Entities.MediaStream>(),
-                RequiredHttpHeaders = new Dictionary<string, string>(),
-            };
+            var mediaSource = BuildMediaSource(id, e);
 
             return new BaseItemDto
             {

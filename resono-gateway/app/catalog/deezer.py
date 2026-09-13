@@ -114,19 +114,67 @@ class DeezerProvider(CatalogProvider):
     async def search_artists(self, query: str, limit: int = 10) -> list[CatalogArtist]:
         try:
             async with self._get_client() as client:
-                res = await client.get("/search/artist", params={"q": query, "limit": limit})
+                res = await client.get("/search/artist", params={"q": query, "limit": 25})
                 res.raise_for_status()
                 data = res.json()
             items = data.get("data", [])
-            artists = []
+            
+            spam_terms = {"piano", "tribute", "cover", "karaoke", "lullaby", "instrumental", "relaxing", "sleep", "orchestra", "love"}
+            clean_q = query.strip().lower()
+            valid_artists: list[dict[str, Any]] = []
+
             for a in items:
+                name = a.get("name", "").strip()
+                name_lower = name.lower()
+                nb_fan = a.get("nb_fan", 0)
                 pic = a.get("picture_xl") or a.get("picture_big") or a.get("picture_medium")
-                artists.append(CatalogArtist(
-                    id=f"deezer:artist:{a.get('id')}",
-                    name=a.get("name", "Unknown Artist"),
-                    artwork_url=pic
-                ))
-            return artists
+
+                # Filter out broken or missing avatar MD5 hashes
+                if not pic or "/artist//1000x1000" in pic or "/artist//500x500" in pic or "/artist//250x250" in pic:
+                    continue
+
+                # Filter out obvious tribute/piano/lullaby accounts
+                words = set(name_lower.split())
+                if any(term in words for term in spam_terms):
+                    continue
+
+                is_exact = (name_lower == clean_q)
+                # If not exact match, require at least 5000 fans to prevent spam/typos
+                if not is_exact and nb_fan < 5000:
+                    continue
+
+                valid_artists.append({
+                    "artist": CatalogArtist(
+                        id=f"deezer:artist:{a.get('id')}",
+                        name=name,
+                        artwork_url=pic
+                    ),
+                    "nb_fan": nb_fan,
+                    "is_exact": is_exact,
+                    "raw_id": str(a.get("id"))
+                })
+
+            # Sort exact match first, then by nb_fan descending
+            valid_artists.sort(key=lambda x: (not x["is_exact"], -x["nb_fan"]))
+            results = [x["artist"] for x in valid_artists[:limit]]
+
+            # If fewer than 4 artists and the top artist is a major verified star (>= 50,000 fans),
+            # append related artists matching Deezer/Spotify UI behavior
+            if len(results) < 4 and valid_artists and valid_artists[0]["nb_fan"] >= 50000:
+                top_id = valid_artists[0]["raw_id"]
+                try:
+                    related = await self.get_artist_related(top_id, limit=limit - len(results) + 2)
+                    existing_names = {r.name.lower() for r in results}
+                    for rel in related:
+                        if rel.name.lower() not in existing_names and rel.artwork_url and "/artist//" not in rel.artwork_url:
+                            results.append(rel)
+                            existing_names.add(rel.name.lower())
+                            if len(results) >= limit:
+                                break
+                except Exception as e:
+                    logger.debug(f"Could not append related artists for {top_id}: {e}")
+
+            return results
         except Exception as e:
             logger.error(f"Deezer search_artists failed for '{query}': {e}")
             return []

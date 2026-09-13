@@ -42,6 +42,87 @@ namespace Resono.Plugin.Filters
             var req = ctx.HttpContext.Request;
             var path = req.Path.Value ?? "";
 
+            // 0. PlaybackInfo (/Items/{id}/PlaybackInfo)
+            if (path.IndexOf("/PlaybackInfo", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                if (TryExtractGuidFromPath(path, out var playId) && _cache.TryGet(playId, out var playEntry) && playEntry != null)
+                {
+                    var ms = ResonoSearchActionFilter.BuildMediaSource(playId, playEntry);
+                    ctx.Result = new OkObjectResult(new
+                    {
+                        MediaSources = new[] { ms },
+                        PlaySessionId = Guid.NewGuid().ToString("N")
+                    });
+                    return;
+                }
+            }
+
+            // 0.1 Audio Stream / Universal Redirection (/Audio/{id}/...)
+            if (path.StartsWith("/Audio/", StringComparison.OrdinalIgnoreCase))
+            {
+                if (TryExtractGuidFromPath(path, out var streamItemId) && _cache.TryGet(streamItemId, out var streamEntry) && streamEntry != null)
+                {
+                    // Universal audio endpoint redirection
+                    if (path.IndexOf("/universal", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        if (req.Query.TryGetValue("EnableRedirection", out var redir) && string.Equals(redir.ToString(), "true", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var target = $"/Audio/{streamItemId:N}/main.mp3{req.QueryString.Value}";
+                            ctx.Result = new RedirectResult(target, false);
+                            return;
+                        }
+                    }
+
+                    // Proxy audio stream directly through Jellyfin server
+                    var cfg = Plugin.Instance?.Configuration;
+                    var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
+                    var targetUrl = !string.IsNullOrEmpty(streamEntry.StreamUrl) ? streamEntry.StreamUrl : $"{gatewayUrl}/playback/{streamEntry.SpotifyId}";
+
+                    try
+                    {
+                        var client = _httpClientFactory.CreateClient();
+                        var forwardReq = new HttpRequestMessage(HttpMethod.Get, targetUrl);
+                        if (req.Headers.TryGetValue("Range", out var rangeVal))
+                        {
+                            forwardReq.Headers.TryAddWithoutValidation("Range", rangeVal.ToString());
+                        }
+
+                        var forwardResp = await client.SendAsync(forwardReq, HttpCompletionOption.ResponseHeadersRead, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        var httpResp = ctx.HttpContext.Response;
+                        httpResp.StatusCode = (int)forwardResp.StatusCode;
+                        httpResp.ContentType = forwardResp.Content.Headers.ContentType?.ToString() ?? "audio/mpeg";
+
+                        if (forwardResp.Content.Headers.ContentLength.HasValue)
+                        {
+                            httpResp.ContentLength = forwardResp.Content.Headers.ContentLength.Value;
+                        }
+                        if (forwardResp.Headers.TryGetValues("Accept-Ranges", out var ar))
+                        {
+                            httpResp.Headers["Accept-Ranges"] = string.Join(",", ar);
+                        }
+                        if (forwardResp.Content.Headers.TryGetValues("Content-Range", out var cr))
+                        {
+                            httpResp.Headers["Content-Range"] = string.Join(",", cr);
+                        }
+
+                        using var srcStream = await forwardResp.Content.ReadAsStreamAsync(ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        await srcStream.CopyToAsync(httpResp.Body, 64 * 1024, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+
+                        ctx.Result = new EmptyResult();
+                        return;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        ctx.Result = new EmptyResult();
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to proxy audio stream for item {Id}: {Message}", streamItemId, ex.Message);
+                    }
+                }
+            }
+
             // 1. Synced Karaoke Lyrics (/Audio/{id}/Lyrics or /Items/{id}/Lyrics)
             if (path.IndexOf("/Lyrics", StringComparison.OrdinalIgnoreCase) >= 0)
             {
@@ -153,6 +234,18 @@ namespace Resono.Plugin.Filters
                         }
                         if (parentEntry is { Kind: "artist" })
                         {
+                            var types = ExtractIncludeItemTypes(req);
+                            if (types.Contains("MusicAlbum"))
+                            {
+                                var albums = await FetchArtistAlbumsAsync(parentEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                                ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
+                                {
+                                    Items = albums.ToArray(),
+                                    TotalRecordCount = albums.Count
+                                });
+                                return;
+                            }
+
                             var tracks = await FetchArtistTopTracksAsync(parentEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                             ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                             {
@@ -184,8 +277,8 @@ namespace Resono.Plugin.Filters
                         if (_cache.TryGet(artistGuid, out var artistEntry) && artistEntry is { Kind: "artist" })
                         {
                             var types = ExtractIncludeItemTypes(req);
-                            bool wantsAlbum = types.Count == 0 || types.Contains("MusicAlbum");
-                            bool wantsAudio = types.Contains("Audio");
+                            bool wantsAlbum = types.Contains("MusicAlbum");
+                            bool wantsAudio = types.Contains("Audio") || (!wantsAlbum && types.Count == 0);
 
                             if (wantsAlbum)
                             {
@@ -297,7 +390,8 @@ namespace Resono.Plugin.Filters
             var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
             foreach (var s in segments)
             {
-                if (Guid.TryParse(s, out id)) return true;
+                var clean = s.IndexOf('.') >= 0 ? s.Split('.')[0] : s;
+                if (Guid.TryParse(clean, out id)) return true;
             }
             return false;
         }
@@ -410,7 +504,7 @@ namespace Resono.Plugin.Filters
                 }
                 else
                 {
-                    var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(artistEntry.Name)}&limit=30";
+                    var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(artistEntry.Name ?? "")}&limit=30";
                     var searchData = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, ct).ConfigureAwait(false);
                     if (searchData?.Albums != null)
                     {
@@ -450,7 +544,7 @@ namespace Resono.Plugin.Filters
                 var cfg = Plugin.Instance!.Configuration;
                 var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var idParam = !string.IsNullOrEmpty(artistEntry.SpotifyId) ? artistEntry.SpotifyId : artistEntry.Name;
-                var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam)}/top";
+                var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam ?? "")}/top?name={Uri.EscapeDataString(artistEntry.Name ?? "")}";
 
                 var client = _httpClientFactory.CreateClient();
                 var res = await client.GetFromJsonAsync<GatewayArtistTopResponse>(url, ct).ConfigureAwait(false);
@@ -482,7 +576,7 @@ namespace Resono.Plugin.Filters
                 }
                 else
                 {
-                    var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(artistEntry.Name)}&limit=15";
+                    var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(artistEntry.Name ?? "")}&limit=15";
                     var searchData = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, ct).ConfigureAwait(false);
                     if (searchData?.Tracks != null)
                     {
