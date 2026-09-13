@@ -15,6 +15,7 @@ namespace Resono.Plugin
         public override string Description => "Stream infinite virtual music tracks seamlessly from Soulseek via the Resono Gateway.";
 
         public static Plugin? Instance { get; private set; }
+        public static string? ServerSystemId { get; set; }
 
         public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer)
             : base(applicationPaths, xmlSerializer)

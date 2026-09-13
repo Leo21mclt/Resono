@@ -15,8 +15,13 @@ namespace Resono.Plugin.Providers
     {
         private readonly ILogger<ResonoMediaSourceProvider> _logger;
 
-        public ResonoMediaSourceProvider(ILogger<ResonoMediaSourceProvider> logger)
+        private readonly Resono.Plugin.Services.ResonoItemCache _cache;
+
+        public ResonoMediaSourceProvider(
+            Resono.Plugin.Services.ResonoItemCache cache,
+            ILogger<ResonoMediaSourceProvider> logger)
         {
+            _cache = cache;
             _logger = logger;
         }
 
@@ -26,21 +31,24 @@ namespace Resono.Plugin.Providers
 
             if (item is Audio audio)
             {
-                string? spotifyId = null;
-                if (audio.ProviderIds.TryGetValue("Spotify", out var spId))
+                var gatewayUrl = Plugin.Instance?.Configuration.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
+                string? streamUrl = null;
+
+                if (_cache.TryGet(audio.Id, out var entry) && !string.IsNullOrEmpty(entry?.StreamUrl))
                 {
-                    spotifyId = spId;
+                    streamUrl = entry.StreamUrl;
                 }
-                else if (audio.ProviderIds.TryGetValue("Resono", out var resId))
+                else if (audio.ProviderIds.TryGetValue("Spotify", out var spId) && !string.IsNullOrEmpty(spId))
                 {
-                    spotifyId = resId;
+                    streamUrl = $"{gatewayUrl}/playback/spotify:track:{spId}";
+                }
+                else if (audio.ProviderIds.TryGetValue("Resono", out var resId) && !string.IsNullOrEmpty(resId))
+                {
+                    streamUrl = $"{gatewayUrl}/playback/{resId}";
                 }
 
-                if (!string.IsNullOrEmpty(spotifyId))
+                if (!string.IsNullOrEmpty(streamUrl))
                 {
-                    var gatewayUrl = Plugin.Instance?.Configuration.GatewayUrl?.TrimEnd('/') ?? "http://localhost:8080";
-                    var streamUrl = $"{gatewayUrl}/playback/spotify:track:{spotifyId}";
-
                     _logger.LogInformation("Delivering Resono media source for track '{Name}' -> {StreamUrl}", audio.Name, streamUrl);
 
                     var sourceInfo = new MediaSourceInfo

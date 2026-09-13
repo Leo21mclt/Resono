@@ -115,6 +115,36 @@ async def resolve_track(track_id: str, db: AsyncSession = Depends(get_db)):
 
     return await job_manager.get_or_create(track.id, _resolve)
 
+@app.get("/stream")
+async def stream_query(
+    artist: str | None = Query(None),
+    title: str | None = Query(None),
+    q: str | None = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Direct stream endpoint compatible with legacy and external players.
+    Accepts artist/title or general search query, acquires audio from Soulseek,
+    and returns an HTTP 206 stream response.
+    """
+    query_str = q or f"{artist or ''} {title or ''}".strip()
+    if not query_str:
+        raise HTTPException(status_code=400, detail="Missing artist/title or query parameter")
+    search_res = await catalog_manager.search(query_str, limit=1)
+    if not search_res.tracks:
+        raise HTTPException(status_code=404, detail=f"Track '{query_str}' not found in catalog")
+    track = search_res.tracks[0]
+    await catalog_manager.sync_track_to_db(track, db)
+    canonical = catalog_manager.to_canonical_track(track)
+    try:
+        audio_file = await acquisition_manager.acquire_track_audio(canonical, db)
+        return get_audio_file_response(audio_file)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"[PLAYBACK] Failed acquisition for '{canonical.title}': {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to acquire recording: {str(e)}")
+
 @app.get("/playback/{track_id:path}")
 @app.get("/stream/{track_id:path}")
 async def stream_track(track_id: str, db: AsyncSession = Depends(get_db)):
@@ -147,7 +177,7 @@ async def stream_track(track_id: str, db: AsyncSession = Depends(get_db)):
 
 @app.get("/jellyfin/search")
 async def jellyfin_search(q: str = Query(..., min_length=1), limit: int = Query(20, ge=1, le=50)):
-    """Search endpoint formatted for Jellyfin C# RemoteSearchProvider."""
+    """Search endpoint formatted for Jellyfin C# RemoteSearchProvider and action filters."""
     results = await catalog_manager.search(q, limit=limit)
     return {
         "artists": [
@@ -212,6 +242,74 @@ async def jellyfin_track_metadata(track_id: str):
         "providerIds": {"Spotify": track.id.replace("spotify:track:", "")}
     }
 
+@app.get("/jellyfin/album/{album_id:path}")
+async def jellyfin_album_details(album_id: str):
+    """Deliver album metadata and child track list for Jellyfin virtual album views."""
+    data = await catalog_manager.get_album(album_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Album not found")
+    album, tracks = data
+    return {
+        "id": album.id,
+        "name": album.title,
+        "artistName": album.artist_name,
+        "artistId": album.artist_id,
+        "releaseDate": album.release_date,
+        "imageUrl": album.artwork_url,
+        "providerIds": {"Spotify": album.id.replace("spotify:album:", "")},
+        "tracks": [
+            {
+                "id": t.id,
+                "canonicalId": catalog_manager.to_canonical_track(t).canonical_id,
+                "name": t.title,
+                "artistName": t.artist_name,
+                "albumName": t.album_title,
+                "durationMs": t.duration_ms,
+                "trackNumber": t.track_number,
+                "discNumber": t.disc_number,
+                "imageUrl": t.artwork_url or album.artwork_url,
+                "streamUrl": f"/playback/{t.id}",
+                "providerIds": {"Spotify": t.id.replace("spotify:track:", "")}
+            }
+            for t in tracks
+        ]
+    }
+
+@app.get("/jellyfin/artist/{artist_id:path}")
+async def jellyfin_artist_details(artist_id: str):
+    """Deliver artist metadata for Jellyfin virtual artist views."""
+    artist = await catalog_manager.get_artist(artist_id)
+    if not artist:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    return {
+        "id": artist.id,
+        "name": artist.name,
+        "imageUrl": artist.artwork_url,
+        "providerIds": {"Spotify": artist.id.replace("spotify:artist:", "")}
+    }
+
+@app.get("/jellyfin/image")
+async def jellyfin_image_proxy(url: str = Query(...)):
+    """
+    Proxy image requests so mobile clients like Discrete, Finamp, Manet
+    receive standard 200 OK responses with caching, avoiding cross-domain 302 drops.
+    """
+    import httpx
+    from fastapi.responses import Response
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            res = await client.get(url, timeout=10.0)
+            if res.status_code == 200:
+                content_type = res.headers.get("content-type", "image/jpeg")
+                return Response(
+                    content=res.content,
+                    media_type=content_type,
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"}
+                )
+    except Exception as e:
+        logger.warning(f"Image proxy failed for '{url}': {e}")
+    raise HTTPException(status_code=404, detail="Image not found")
+
 @app.post("/jellyfin/telemetry/playback")
 async def jellyfin_playback_telemetry(payload: dict[str, Any], db: AsyncSession = Depends(get_db)):
     """Listen for Jellyfin playback & favorite events to adjust adaptive cache retention score."""
@@ -236,6 +334,21 @@ async def jellyfin_playback_telemetry(payload: dict[str, Any], db: AsyncSession 
         return {"status": "updated", "tier": entry.tier, "retention_score": entry.retention_score}
 
     return {"status": "acknowledged"}
+
+@app.get("/plugin/Resono.Plugin.dll")
+async def download_plugin_dll():
+    """Serve the compiled Jellyfin plugin DLL for one-command installation."""
+    candidate_paths = [
+        Path("/app/app/plugin/Resono.Plugin.dll"),
+        Path("/app/plugin/Resono.Plugin.dll"),
+        Path("./plugin/Resono.Plugin.dll"),
+        Path("../resono-jellyfin-plugin/dist/Resono.Plugin.dll"),
+        Path("../resono-jellyfin-plugin/bin/Release/net8.0/Resono.Plugin.dll")
+    ]
+    for p in candidate_paths:
+        if p.exists():
+            return FileResponse(p, filename="Resono.Plugin.dll", media_type="application/octet-stream")
+    raise HTTPException(status_code=404, detail="Resono.Plugin.dll not found")
 
 if __name__ == "__main__":
     import uvicorn
