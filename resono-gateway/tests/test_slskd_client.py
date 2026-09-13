@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from app.slskd.client import SlskdClient
 
@@ -15,27 +15,40 @@ async def test_search_uses_pagination_params():
     mock_post_resp.raise_for_status = MagicMock()
     mock_http.post.return_value = mock_post_resp
 
-    # 2. Mock GET /api/v0/searches/{id}/responses
-    mock_get_resp = MagicMock()
-    mock_get_resp.status_code = 200
-    mock_get_resp.json.return_value = [
-        {
-            "username": "timoz",
-            "uploadSpeed": 2379998,
-            "queueLength": 0,
-            "hasFreeUploadSlot": True,
-            "files": [
+    # 2. Mock GET responses based on route
+    async def mock_get(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if "/responses" in url:
+            resp.json.return_value = [
                 {
-                    "filename": "Music\\Daft Punk\\Random Access Memories\\08 - Get Lucky.flac",
-                    "size": 43627996,
-                    "length": 369,
-                    "bitRate": 1000,
-                    "isLocked": False,
+                    "username": "timoz",
+                    "uploadSpeed": 2379998,
+                    "queueLength": 0,
+                    "hasFreeUploadSlot": True,
+                    "files": [
+                        {
+                            "filename": "Music\\Daft Punk\\Random Access Memories\\08 - Get Lucky.flac",
+                            "size": 43627996,
+                            "length": 369,
+                            "bitRate": 1000,
+                            "isLocked": False,
+                        }
+                    ],
                 }
-            ],
-        }
-    ]
-    mock_http.get.return_value = mock_get_resp
+            ]
+        else:
+            resp.json.return_value = {
+                "id": "search-uuid-1234",
+                "searchText": "Daft Punk Get Lucky",
+                "fileCount": 50,
+                "responseCount": 20,
+                "isComplete": True,
+                "state": "Completed, Cancelled",
+            }
+        return resp
+
+    mock_http.get.side_effect = mock_get
 
     mock_cm = AsyncMock()
     mock_cm.__aenter__.return_value = mock_http
