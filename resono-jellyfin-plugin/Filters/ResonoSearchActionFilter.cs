@@ -127,7 +127,7 @@ namespace Resono.Plugin.Filters
                     AugmentItems(qr, searchData, gatewayUrl);
                     break;
                 case SearchHintResult sr:
-                    AugmentHints(sr, searchData);
+                    or.Value = AugmentHints(sr, searchData);
                     break;
             }
         }
@@ -233,9 +233,9 @@ namespace Resono.Plugin.Filters
             }
         }
 
-        private void AugmentHints(SearchHintResult sr, GatewaySearchResponse data)
+        private SearchHintResult AugmentHints(SearchHintResult sr, GatewaySearchResponse data)
         {
-            var existingIds = sr.SearchHints.Select(h => h.ItemId).ToHashSet();
+            var existingIds = (sr.SearchHints ?? Array.Empty<SearchHint>()).Select(h => h.Id).ToHashSet();
             var additions = new List<SearchHint>();
 
             if (data.Tracks != null)
@@ -249,10 +249,9 @@ namespace Resono.Plugin.Filters
                     {
                         additions.Add(new SearchHint
                         {
-                            ItemId = id,
                             Id = id,
                             Name = t.Name,
-                            Type = "Audio",
+                            Type = BaseItemKind.Audio,
                             Artists = !string.IsNullOrEmpty(t.ArtistName) ? new[] { t.ArtistName } : Array.Empty<string>(),
                             Album = t.AlbumName,
                             PrimaryImageTag = "resono-" + id.ToString("N"),
@@ -263,12 +262,10 @@ namespace Resono.Plugin.Filters
                 }
             }
 
-            if (additions.Count > 0)
-            {
-                var combined = sr.SearchHints.Concat(additions).ToArray();
-                sr.SearchHints = combined;
-                sr.TotalRecordCount = combined.Length;
-            }
+            if (additions.Count == 0) return sr;
+
+            var combined = (sr.SearchHints ?? Array.Empty<SearchHint>()).Concat(additions).ToArray();
+            return new SearchHintResult(combined, combined.Length);
         }
 
         public static BaseItemDto BuildArtistDto(Guid id, ResonoItemCache.Entry e)
@@ -282,7 +279,6 @@ namespace Resono.Plugin.Filters
                 Type = BaseItemKind.MusicArtist,
                 MediaType = MediaType.Unknown,
                 Tags = new[] { "ResonoVirtual" },
-                PrimaryImageTag = imageTag,
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
                 ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new() } },
                 PrimaryImageAspectRatio = 1.0,
@@ -307,7 +303,6 @@ namespace Resono.Plugin.Filters
                 Type = BaseItemKind.MusicAlbum,
                 MediaType = MediaType.Unknown,
                 Tags = new[] { "ResonoVirtual" },
-                PrimaryImageTag = imageTag,
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
                 ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new() } },
                 PrimaryImageAspectRatio = 1.0,
@@ -354,7 +349,6 @@ namespace Resono.Plugin.Filters
                 Type = BaseItemKind.Audio,
                 MediaType = MediaType.Audio,
                 Tags = new[] { "ResonoVirtual" },
-                PrimaryImageTag = imageTag,
                 AlbumPrimaryImageTag = albumImageTag,
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
                 ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new() } },
