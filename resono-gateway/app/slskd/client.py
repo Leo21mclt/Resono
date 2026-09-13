@@ -79,7 +79,10 @@ class SlskdClient(SoulseekBackend):
                 elapsed += poll_interval
 
                 try:
-                    resp_res = await client.get(f"/api/v0/searches/{search_id}/responses")
+                    resp_res = await client.get(
+                        f"/api/v0/searches/{search_id}/responses",
+                        params={"offset": 0, "limit": 250},
+                    )
                     if resp_res.status_code == 200:
                         responses = resp_res.json()
                         current_candidates = self._parse_responses(responses)
