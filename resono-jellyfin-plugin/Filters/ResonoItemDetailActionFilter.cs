@@ -384,15 +384,13 @@ namespace Resono.Plugin.Filters
             var req = ctx.HttpContext.Request;
             var path = req.Path.Value ?? string.Empty;
 
-            // Augment Playlists, Suggestions, Albums, Artists, or Songs with virtual discovery items
+            // Augment Playlists, Suggestions, or Songs with virtual discovery charts when empty
             var cfg = Plugin.Instance?.Configuration;
             if (cfg != null && cfg.EnableVirtualPlaylists && ctx.Result is ObjectResult or && or.Value is QueryResult<BaseItemDto> qr)
             {
                 var types = ExtractIncludeItemTypes(req);
                 bool isPlaylistsQuery = types.Contains("Playlist") || path.IndexOf("/Playlists", StringComparison.OrdinalIgnoreCase) >= 0;
                 bool isSuggestionsQuery = path.IndexOf("/Suggestions", StringComparison.OrdinalIgnoreCase) >= 0;
-                bool isAlbumsQuery = types.Contains("MusicAlbum");
-                bool isArtistsQuery = types.Contains("MusicArtist") || path.IndexOf("/Artists", StringComparison.OrdinalIgnoreCase) >= 0;
                 bool isSongsQuery = types.Contains("Audio");
 
                 bool hasSearchTerm = req.Query.ContainsKey("searchTerm") || req.Query.ContainsKey("SearchTerm") || req.Query.ContainsKey("nameStartsWithOrGreater");
@@ -414,79 +412,13 @@ namespace Resono.Plugin.Filters
                                 }
                             }
                         }
-                        else if (qr.TotalRecordCount == 0)
+                        else if (qr.TotalRecordCount == 0 && isSongsQuery)
                         {
                             var chartTracks = await FetchChartTracksAsync("global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                             if (chartTracks != null && chartTracks.Count > 0)
                             {
-                                if (isSongsQuery)
-                                {
-                                    qr.Items = chartTracks.ToArray();
-                                    qr.TotalRecordCount = chartTracks.Count;
-                                }
-                                else if (isAlbumsQuery)
-                                {
-                                    var seenAlbums = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                                    var albumItems = new List<BaseItemDto>();
-                                    foreach (var t in chartTracks)
-                                    {
-                                        var albName = t.Album;
-                                        if (!string.IsNullOrEmpty(albName) && seenAlbums.Add(albName))
-                                        {
-                                            var albGuid = t.AlbumId ?? ResonoItemCache.DeterministicGuid("album:" + albName);
-                                            string? albImg = null;
-                                            if (t.ImageTags != null && t.ImageTags.TryGetValue(ImageType.Primary, out var tagStr))
-                                            {
-                                                albImg = tagStr;
-                                            }
-                                            var albEntry = new ResonoItemCache.Entry
-                                            {
-                                                Kind = "album",
-                                                Name = albName,
-                                                ArtistName = t.AlbumArtist ?? (t.ArtistItems != null && t.ArtistItems.Length > 0 ? t.ArtistItems[0].Name : "Various Artists"),
-                                                ImageUrl = albImg
-                                            };
-                                            _cache.Set(albGuid, albEntry);
-                                            albumItems.Add(ResonoSearchActionFilter.BuildAlbumDto(albGuid, albEntry));
-                                        }
-                                    }
-                                    if (albumItems.Count > 0)
-                                    {
-                                        qr.Items = albumItems.ToArray();
-                                        qr.TotalRecordCount = albumItems.Count;
-                                    }
-                                }
-                                else if (isArtistsQuery)
-                                {
-                                    var seenArtists = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                                    var artistItems = new List<BaseItemDto>();
-                                    foreach (var t in chartTracks)
-                                    {
-                                        var artName = t.AlbumArtist ?? (t.ArtistItems != null && t.ArtistItems.Length > 0 ? t.ArtistItems[0].Name : null);
-                                        if (!string.IsNullOrEmpty(artName) && seenArtists.Add(artName))
-                                        {
-                                            var artGuid = (t.ArtistItems != null && t.ArtistItems.Length > 0) ? t.ArtistItems[0].Id : ResonoItemCache.DeterministicGuid("artist:" + artName);
-                                            string? artImg = null;
-                                            if (t.ImageTags != null && t.ImageTags.TryGetValue(ImageType.Primary, out var tagStr))
-                                            {
-                                                artImg = tagStr;
-                                            }
-                                            var artEntry = new ResonoItemCache.Entry
-                                            {
-                                                Kind = "artist",
-                                                Name = artName,
-                                                ImageUrl = artImg
-                                            };
-                                            _cache.Set(artGuid, artEntry);
-                                            artistItems.Add(ResonoSearchActionFilter.BuildArtistDto(artGuid, artEntry));
-                                        }
-                                    }
-                                    if (artistItems.Count > 0)
-                                    {
-                                        qr.Items = artistItems.ToArray();
-                                        qr.TotalRecordCount = artistItems.Count;
-                                    }
-                                }
+                                qr.Items = chartTracks.ToArray();
+                                qr.TotalRecordCount = chartTracks.Count;
                             }
                         }
                     }
