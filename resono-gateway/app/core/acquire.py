@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import logging
 from pathlib import Path
@@ -212,10 +213,14 @@ class AcquisitionManager:
         if expected.exists() and expected.stat().st_size > 0:
             return expected
 
-        # 2. Recursive search by filename
-        for p in self.downloads_path.rglob(f"*{candidate.filename}*"):
-            if p.is_file() and p.stat().st_size > 0:
-                return p
+        # 2. Recursive search by filename (safe against special characters and brackets like [FLAC])
+        target_name = candidate.filename.lower()
+        for root, _, files in os.walk(self.downloads_path):
+            for f in files:
+                if target_name in f.lower() or f.lower() in target_name:
+                    full_p = Path(root) / f
+                    if full_p.is_file() and full_p.stat().st_size > 0:
+                        return full_p
 
         return None
 

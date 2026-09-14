@@ -234,7 +234,23 @@ namespace Resono.Plugin.Filters
                 foreach (var al in data.Albums)
                 {
                     var id = ResonoItemCache.DeterministicGuid(al.Id ?? al.Name ?? Guid.NewGuid().ToString());
-                    var artistId = !string.IsNullOrEmpty(al.ArtistId) ? ResonoItemCache.DeterministicGuid(al.ArtistId) : (Guid?)null;
+                    var artistId = !string.IsNullOrEmpty(al.ArtistId)
+                        ? ResonoItemCache.DeterministicGuid(al.ArtistId)
+                        : (!string.IsNullOrEmpty(al.ArtistName) ? ResonoItemCache.DeterministicGuid("artist:" + al.ArtistName) : (Guid?)null);
+
+                    if (artistId.HasValue && !string.IsNullOrEmpty(al.ArtistName))
+                    {
+                        if (!_cache.TryGet(artistId.Value, out _))
+                        {
+                            _cache.Set(artistId.Value, new ResonoItemCache.Entry
+                            {
+                                Kind = "artist",
+                                Name = al.ArtistName,
+                                SpotifyId = al.ArtistId
+                            });
+                        }
+                    }
+
                     if (existingIds.Add(id))
                     {
                         var entry = new ResonoItemCache.Entry
@@ -247,20 +263,6 @@ namespace Resono.Plugin.Filters
                             ArtistId = artistId
                         };
                         _cache.Set(id, entry);
-                        if (artistId.HasValue && !string.IsNullOrEmpty(al.ArtistName))
-                        {
-                            if (!_cache.TryGet(artistId.Value, out var existingArtist) || string.IsNullOrEmpty(existingArtist?.ImageUrl))
-                            {
-                                var matchedArt = data.Artists?.FirstOrDefault(a => string.Equals(a.Name, al.ArtistName, StringComparison.OrdinalIgnoreCase))?.ImageUrl;
-                                _cache.Set(artistId.Value, new ResonoItemCache.Entry
-                                {
-                                    Kind = "artist",
-                                    Name = al.ArtistName,
-                                    SpotifyId = al.ArtistId,
-                                    ImageUrl = matchedArt
-                                });
-                            }
-                        }
                         additions.Add(BuildAlbumDto(id, entry));
                     }
                 }
@@ -286,6 +288,19 @@ namespace Resono.Plugin.Filters
                             ? ResonoItemCache.DeterministicGuid("artist:" + t.ArtistName)
                             : (Guid?)null;
 
+                    if (artistId.HasValue && !string.IsNullOrEmpty(t.ArtistName))
+                    {
+                        if (!_cache.TryGet(artistId.Value, out _))
+                        {
+                            _cache.Set(artistId.Value, new ResonoItemCache.Entry
+                            {
+                                Kind = "artist",
+                                Name = t.ArtistName,
+                                SpotifyId = t.ArtistId
+                            });
+                        }
+                    }
+
                     if (existingIds.Add(id))
                     {
                         var streamUrl = !string.IsNullOrEmpty(t.StreamUrl)
@@ -310,33 +325,24 @@ namespace Resono.Plugin.Filters
                         _cache.Set(id, entry);
                         if (albumId.HasValue && !string.IsNullOrEmpty(t.AlbumName))
                         {
-                            if (!_cache.TryGet(albumId.Value, out var existingAlbum) || string.IsNullOrEmpty(existingAlbum?.SpotifyId))
+                            _cache.Set(albumId.Value, new ResonoItemCache.Entry
                             {
-                                var matchedAlb = data.Albums?.FirstOrDefault(al => string.Equals(al.Name, t.AlbumName, StringComparison.OrdinalIgnoreCase));
-                                _cache.Set(albumId.Value, new ResonoItemCache.Entry
-                                {
-                                    Kind = "album",
-                                    Name = t.AlbumName,
-                                    ArtistName = t.ArtistName,
-                                    SpotifyId = t.AlbumId ?? matchedAlb?.Id,
-                                    ImageUrl = t.ImageUrl ?? matchedAlb?.ImageUrl,
-                                    ArtistId = artistId
-                                });
-                            }
+                                Kind = "album",
+                                Name = t.AlbumName,
+                                ArtistName = t.ArtistName,
+                                SpotifyId = t.AlbumId,
+                                ImageUrl = t.ImageUrl,
+                                ArtistId = artistId
+                            });
                         }
                         if (artistId.HasValue && !string.IsNullOrEmpty(t.ArtistName))
                         {
-                            if (!_cache.TryGet(artistId.Value, out var existingArtist) || string.IsNullOrEmpty(existingArtist?.ImageUrl))
+                            _cache.Set(artistId.Value, new ResonoItemCache.Entry
                             {
-                                var matchedArt = data.Artists?.FirstOrDefault(a => string.Equals(a.Name, t.ArtistName, StringComparison.OrdinalIgnoreCase))?.ImageUrl;
-                                _cache.Set(artistId.Value, new ResonoItemCache.Entry
-                                {
-                                    Kind = "artist",
-                                    Name = t.ArtistName,
-                                    SpotifyId = t.ArtistId,
-                                    ImageUrl = matchedArt
-                                });
-                            }
+                                Kind = "artist",
+                                Name = t.ArtistName,
+                                ImageUrl = t.ImageUrl
+                            });
                         }
                         additions.Add(BuildTrackDto(id, entry));
                     }
@@ -404,6 +410,7 @@ namespace Resono.Plugin.Filters
                 ChildCount = 50,
                 SongCount = 50,
                 AlbumCount = 20,
+                LocationType = LocationType.Virtual,
             };
         }
 
@@ -432,6 +439,7 @@ namespace Resono.Plugin.Filters
                 AlbumArtists = artistPair ?? Array.Empty<NameGuidPair>(),
                 ArtistItems = artistPair ?? Array.Empty<NameGuidPair>(),
                 IsFolder = true,
+                LocationType = LocationType.Virtual,
             };
         }
 
@@ -506,7 +514,7 @@ namespace Resono.Plugin.Filters
                 RunTimeTicks = e.DurationMs.HasValue ? (long)e.DurationMs.Value * 10000 : null,
                 IsFolder = false,
                 CanDownload = false,
-                LocationType = LocationType.FileSystem,
+                LocationType = LocationType.Virtual,
                 MediaSources = new[] { mediaSource },
             };
         }
@@ -532,6 +540,8 @@ namespace Resono.Plugin.Filters
         public string? Name { get; set; }
         [JsonPropertyName("imageUrl")]
         public string? ImageUrl { get; set; }
+        [JsonPropertyName("providerIds")]
+        public Dictionary<string, string>? ProviderIds { get; set; }
     }
 
     public class GatewayAlbum
@@ -548,6 +558,8 @@ namespace Resono.Plugin.Filters
         public string? ReleaseDate { get; set; }
         [JsonPropertyName("imageUrl")]
         public string? ImageUrl { get; set; }
+        [JsonPropertyName("providerIds")]
+        public Dictionary<string, string>? ProviderIds { get; set; }
     }
 
     public class GatewayTrack
@@ -576,5 +588,7 @@ namespace Resono.Plugin.Filters
         public string? ImageUrl { get; set; }
         [JsonPropertyName("streamUrl")]
         public string? StreamUrl { get; set; }
+        [JsonPropertyName("providerIds")]
+        public Dictionary<string, string>? ProviderIds { get; set; }
     }
 }

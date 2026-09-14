@@ -96,25 +96,118 @@ class ITunesProvider(CatalogProvider):
             logger.error(f"iTunes search failed for '{query}': {e}")
             return CatalogSearchResult()
 
+    async def _resolve_artist_art(self, name: str) -> str | None:
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                res = await client.get("https://api.deezer.com/search/artist", params={"q": name, "limit": 1})
+                if res.status_code == 200:
+                    items = res.json().get("data", [])
+                    if items:
+                        return items[0].get("picture_xl") or items[0].get("picture_big")
+        except Exception:
+            pass
+        return None
+
     async def get_artist(self, artist_id: str) -> CatalogArtist | None:
         raw_id = artist_id.replace("itunes:artist:", "")
         try:
             async with self._get_client() as client:
-                res = await client.get("/lookup", params={"id": raw_id, "entity": "album"})
+                params = {"id": raw_id, "entity": "album"} if raw_id.isdigit() else None
+                if params:
+                    res = await client.get("/lookup", params=params)
+                else:
+                    res = await client.get("/search", params={"term": raw_id, "entity": "musicArtist", "limit": 1})
                 res.raise_for_status()
                 data = res.json()
             results = data.get("results", [])
             if not results:
                 return None
             artist_data = results[0]
+            artist_name = artist_data.get("artistName", "Unknown")
+            art_url = await self._resolve_artist_art(artist_name)
             return CatalogArtist(
-                id=f"itunes:artist:{raw_id}",
-                name=artist_data.get("artistName", "Unknown"),
+                id=f"itunes:artist:{artist_data.get('artistId', raw_id)}",
+                name=artist_name,
+                artwork_url=art_url,
                 genres=[artist_data.get("primaryGenreName")] if artist_data.get("primaryGenreName") else []
             )
         except Exception as e:
             logger.error(f"iTunes get_artist failed for '{artist_id}': {e}")
             return None
+
+    async def get_artist_top_tracks(self, artist_id: str, name: str | None = None, limit: int = 10) -> list[CatalogTrack]:
+        raw_id = artist_id.replace("itunes:artist:", "")
+        tracks: list[CatalogTrack] = []
+        try:
+            async with self._get_client() as client:
+                if raw_id.isdigit():
+                    res = await client.get("/lookup", params={"id": raw_id, "entity": "song", "limit": limit + 1})
+                else:
+                    query = name or raw_id
+                    res = await client.get("/search", params={"term": query, "media": "music", "entity": "song", "limit": limit})
+                res.raise_for_status()
+                data = res.json()
+
+            results = data.get("results", [])
+            for item in results:
+                if item.get("wrapperType") == "track":
+                    art = self._upgrade_art(item.get("artworkUrl100"))
+                    tracks.append(CatalogTrack(
+                        id=f"itunes:track:{item.get('trackId')}",
+                        title=item.get("trackName", ""),
+                        artist_name=item.get("artistName", name or ""),
+                        artist_id=f"itunes:artist:{item.get('artistId', raw_id)}",
+                        album_title=item.get("collectionName", ""),
+                        album_id=f"itunes:album:{item.get('collectionId', '')}",
+                        duration_ms=item.get("trackTimeMillis", 0),
+                        disc_number=item.get("discNumber", 1),
+                        track_number=item.get("trackNumber", 1),
+                        artwork_url=art,
+                        explicit=(item.get("trackExplicitness") == "explicit")
+                    ))
+                    if len(tracks) >= limit:
+                        break
+        except Exception as e:
+            logger.error(f"iTunes get_artist_top_tracks failed for '{artist_id}': {e}")
+        return tracks
+
+    async def get_artist_albums(self, artist_id: str, name: str | None = None, limit: int = 50) -> list[CatalogAlbum]:
+        raw_id = artist_id.replace("itunes:artist:", "")
+        albums: list[CatalogAlbum] = []
+        seen_titles = set()
+        try:
+            async with self._get_client() as client:
+                if raw_id.isdigit():
+                    res = await client.get("/lookup", params={"id": raw_id, "entity": "album", "limit": limit + 1})
+                else:
+                    query = name or raw_id
+                    res = await client.get("/search", params={"term": query, "media": "music", "entity": "album", "limit": limit})
+                res.raise_for_status()
+                data = res.json()
+
+            results = data.get("results", [])
+            for item in results:
+                if item.get("wrapperType") == "collection" or item.get("collectionType") == "Album":
+                    title = item.get("collectionName", "")
+                    clean_title = title.lower().strip()
+                    if clean_title in seen_titles:
+                        continue
+                    seen_titles.add(clean_title)
+                    art = self._upgrade_art(item.get("artworkUrl100"))
+                    albums.append(CatalogAlbum(
+                        id=f"itunes:album:{item.get('collectionId')}",
+                        title=title,
+                        artist_name=item.get("artistName", name or ""),
+                        artist_id=f"itunes:artist:{item.get('artistId', raw_id)}",
+                        release_date=item.get("releaseDate", "")[:10] if item.get("releaseDate") else None,
+                        total_tracks=item.get("trackCount", 1),
+                        artwork_url=art
+                    ))
+                    if len(albums) >= limit:
+                        break
+        except Exception as e:
+            logger.error(f"iTunes get_artist_albums failed for '{artist_id}': {e}")
+        return albums
 
     async def get_album(self, album_id: str) -> tuple[CatalogAlbum, list[CatalogTrack]] | None:
         raw_id = album_id.replace("itunes:album:", "")

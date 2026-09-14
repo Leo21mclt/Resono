@@ -10,6 +10,7 @@ using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Providers;
 using Microsoft.Extensions.Logging;
+using Resono.Plugin.Filters;
 
 namespace Resono.Plugin.Providers
 {
@@ -83,89 +84,5 @@ namespace Resono.Plugin.Providers
             var client = _httpClientFactory.CreateClient();
             return client.GetAsync(url, cancellationToken);
         }
-    }
-
-    public class GatewaySearchResponse
-    {
-        [JsonPropertyName("artists")]
-        public List<GatewayArtistResult>? Artists { get; set; }
-
-        [JsonPropertyName("albums")]
-        public List<GatewayAlbumResult>? Albums { get; set; }
-
-        [JsonPropertyName("tracks")]
-        public List<GatewayTrackResult>? Tracks { get; set; }
-    }
-
-    public class GatewayArtistResult
-    {
-        [JsonPropertyName("id")]
-        public string? Id { get; set; }
-
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("imageUrl")]
-        public string? ImageUrl { get; set; }
-
-        [JsonPropertyName("providerIds")]
-        public Dictionary<string, string>? ProviderIds { get; set; }
-    }
-
-    public class GatewayAlbumResult
-    {
-        [JsonPropertyName("id")]
-        public string? Id { get; set; }
-
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("artistName")]
-        public string? ArtistName { get; set; }
-
-        [JsonPropertyName("releaseDate")]
-        public string? ReleaseDate { get; set; }
-
-        [JsonPropertyName("imageUrl")]
-        public string? ImageUrl { get; set; }
-
-        [JsonPropertyName("providerIds")]
-        public Dictionary<string, string>? ProviderIds { get; set; }
-    }
-
-    public class GatewayTrackResult
-    {
-        [JsonPropertyName("id")]
-        public string? Id { get; set; }
-
-        [JsonPropertyName("canonicalId")]
-        public string? CanonicalId { get; set; }
-
-        [JsonPropertyName("name")]
-        public string? Name { get; set; }
-
-        [JsonPropertyName("artistName")]
-        public string? ArtistName { get; set; }
-
-        [JsonPropertyName("albumName")]
-        public string? AlbumName { get; set; }
-
-        [JsonPropertyName("durationMs")]
-        public int DurationMs { get; set; }
-
-        [JsonPropertyName("trackNumber")]
-        public int TrackNumber { get; set; }
-
-        [JsonPropertyName("discNumber")]
-        public int DiscNumber { get; set; }
-
-        [JsonPropertyName("imageUrl")]
-        public string? ImageUrl { get; set; }
-
-        [JsonPropertyName("streamUrl")]
-        public string? StreamUrl { get; set; }
-
-        [JsonPropertyName("providerIds")]
-        public Dictionary<string, string>? ProviderIds { get; set; }
     }
 }

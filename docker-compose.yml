@@ -5,35 +5,21 @@ services:
     ports:
       - "8096:8096"
     volumes:
-      - ../files/jellyfin-config:/config
-      - ../files/jellyfin-cache:/cache
-      - ../files/test-music:/media/music
+      - ${JELLYFIN_CONFIG_DIR:-./config/jellyfin}:/config
+      - ${JELLYFIN_CACHE_DIR:-./cache/jellyfin}:/cache
+      - ${JELLYFIN_MEDIA_DIR:-./media/music}:/media/music
     restart: unless-stopped
 
   ytmusic-stream-server:
-    image: python:3.11-slim
+    build:
+      context: ./ytmusic-stream-server
+      dockerfile: Dockerfile
     container_name: ytmusic-stream-server
     restart: unless-stopped
-    command: >
-      bash -c "
-      set -e &&
-      dpkg --configure -a || true &&
-      apt-get update &&
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg git curl ca-certificates unzip &&
-      curl -fsSL https://deno.land/install.sh | sh &&
-      export PATH=/root/.deno/bin:\$PATH &&
-      deno --version &&
-      rm -rf /music-repo &&
-      git clone https://github.com/Leo21mclt/JellyMusicDiscovery.git /music-repo &&
-      cd /music-repo/ytmusic-stream-server &&
-      pip install --no-cache-dir -r requirements.txt &&
-      cp /app/cookies.txt /tmp/cookies.txt || true &&
-      python server.py
-      "
     ports:
       - "8081:8081"
     volumes:
-      - ../files/ytmusic-cookies:/app:ro
+      - ${YTMUSIC_COOKIES_DIR:-./config/ytmusic}:/app/cookies:ro
 
   slskd:
     image: slskd/slskd:latest
@@ -59,6 +45,7 @@ services:
     restart: unless-stopped
     depends_on:
       - slskd
+      - ytmusic-stream-server
     environment:
       - RESONO_HOST=0.0.0.0
       - RESONO_PORT=8080

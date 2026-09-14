@@ -80,13 +80,7 @@ class CatalogManager:
                 try:
                     dz = self.providers["deezer"]
                     if hasattr(dz, "search_artists"):
-                        query_artists = clean_query
-                        if not res.artists and res.albums:
-                            query_artists = res.albums[0].artist_name
-                        elif not res.artists and res.tracks:
-                            query_artists = res.tracks[0].artist_name
-
-                        dz_artists = await dz.search_artists(query_artists, limit=10)
+                        dz_artists = await dz.search_artists(clean_query, limit=10)
                         if dz_artists:
                             # Build a name→artwork lookup from Deezer HD portraits
                             dz_art_by_name = {a.name.lower(): a for a in dz_artists}
@@ -124,32 +118,21 @@ class CatalogManager:
 
     async def get_artist(self, artist_id: str) -> CatalogArtist | None:
         prefix = artist_id.split(":")[0].lower() if ":" in artist_id else ""
-        artist: CatalogArtist | None = None
         if prefix in ("itunes", "apple"):
-            artist = await self.providers["apple"].get_artist(artist_id)
-        elif prefix == "deezer":
-            artist = await self.providers["deezer"].get_artist(artist_id)
-        elif prefix == "spotify":
-            artist = await self.providers["spotify"].get_artist(artist_id)
-        elif prefix in ("mb", "musicbrainz"):
-            artist = await self.providers["musicbrainz"].get_artist(artist_id)
-        else:
-            for prov in (self.providers["apple"], self.providers["deezer"], self.providers["spotify"]):
-                artist = await prov.get_artist(artist_id)
-                if artist:
-                    break
+            return await self.providers["apple"].get_artist(artist_id)
+        if prefix == "deezer":
+            return await self.providers["deezer"].get_artist(artist_id)
+        if prefix == "spotify":
+            return await self.providers["spotify"].get_artist(artist_id)
+        if prefix in ("mb", "musicbrainz"):
+            return await self.providers["musicbrainz"].get_artist(artist_id)
 
-        if artist and not artist.artwork_url and artist.name:
-            try:
-                dz = self.providers["deezer"]
-                if hasattr(dz, "search_artists"):
-                    dz_artists = await dz.search_artists(artist.name, limit=1)
-                    if dz_artists and dz_artists[0].artwork_url:
-                        artist.artwork_url = dz_artists[0].artwork_url
-            except Exception:
-                pass
-
-        return artist
+        # Fallback search across providers
+        for prov in (self.providers["apple"], self.providers["deezer"], self.providers["spotify"]):
+            res = await prov.get_artist(artist_id)
+            if res:
+                return res
+        return None
 
     async def get_album(self, album_id: str) -> tuple[CatalogAlbum, list[CatalogTrack]] | None:
         prefix = album_id.split(":")[0].lower() if ":" in album_id else ""
@@ -183,22 +166,56 @@ class CatalogManager:
             res = await prov.get_track(track_id)
             if res:
                 return res
+
+        # Try SQLite database lookup for canonical UUID
+        try:
+            from app.db.database import AsyncSessionLocal
+            from app.db.models import Track
+            from sqlalchemy import select
+            async with AsyncSessionLocal() as session:
+                stmt = select(Track).where(Track.canonical_id == track_id)
+                db_res = await session.execute(stmt)
+                t = db_res.scalar_one_or_none()
+                if t:
+                    return CatalogTrack(
+                        id=t.canonical_id,
+                        title=t.title,
+                        artist_name=t.artist,
+                        album_title=t.album,
+                        duration_ms=t.duration_ms,
+                        artwork_url=t.artwork_url
+                    )
+        except Exception:
+            pass
+
         return None
 
     async def get_artist_top_tracks(self, artist_id: str, name: str | None = None, limit: int = 10) -> list[CatalogTrack]:
-        deezer = self.providers["deezer"]
-        if hasattr(deezer, "get_artist_top_tracks"):
-            res = await deezer.get_artist_top_tracks(artist_id, name=name, limit=limit)
-            if res:
-                return res
+        primary_name = getattr(settings, "CATALOG_PROVIDER", "apple").lower()
+        providers_to_try = [self.providers["apple"], self.providers["deezer"]] if primary_name in ("apple", "itunes") else [self.providers["deezer"], self.providers["apple"]]
+
+        for prov in providers_to_try:
+            if hasattr(prov, "get_artist_top_tracks"):
+                try:
+                    res = await prov.get_artist_top_tracks(artist_id, name=name, limit=limit)
+                    if res:
+                        return res
+                except Exception as e:
+                    logger.warning(f"Provider {prov.name} get_artist_top_tracks error: {e}")
         return []
 
     async def get_artist_albums(self, artist_id: str, name: str | None = None, limit: int = 50) -> list[CatalogAlbum]:
-        deezer = self.providers["deezer"]
-        if hasattr(deezer, "get_artist_albums"):
-            res = await deezer.get_artist_albums(artist_id, name=name, limit=limit)
-            if res:
-                return res
+        primary_name = getattr(settings, "CATALOG_PROVIDER", "apple").lower()
+        providers_to_try = [self.providers["apple"], self.providers["deezer"]] if primary_name in ("apple", "itunes") else [self.providers["deezer"], self.providers["apple"]]
+
+        for prov in providers_to_try:
+            if hasattr(prov, "get_artist_albums"):
+                try:
+                    res = await prov.get_artist_albums(artist_id, name=name, limit=limit)
+                    if res:
+                        return res
+                except Exception as e:
+                    logger.warning(f"Provider {prov.name} get_artist_albums error: {e}")
         return []
 
     async def get_artist_related(self, artist_id: str, name: str | None = None, limit: int = 10) -> list[CatalogArtist]:

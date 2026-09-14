@@ -8,8 +8,6 @@ aiosqlite>=0.20.0
 python-multipart>=0.0.9
 mutagen>=1.47.0
 spotapi>=1.2.8
-pymongo>=4.6.0
-redis>=5.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 
