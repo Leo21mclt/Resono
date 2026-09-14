@@ -120,21 +120,25 @@ class ExactRecordingMatcher:
                 breakdown.track_number_bonus = 0.10
 
         # 7. Quality & Availability score
+        # Prioritize MP3 320k for universal compatibility (iOS/Safari/Android/Web) and small download size (~8MB vs ~50MB FLAC)
         q_score = 0.0
         codec_lower = candidate.codec.lower()
-        if codec_lower == "flac" or codec_lower == "alac":
+        if codec_lower == "mp3" and candidate.bitrate and candidate.bitrate >= 320:
             q_score += 0.08
-        elif candidate.bitrate and candidate.bitrate >= 320:
+        elif codec_lower == "mp3" and candidate.bitrate and candidate.bitrate >= 256:
             q_score += 0.06
-        elif candidate.bitrate and candidate.bitrate >= 256:
+        elif codec_lower in ("flac", "alac"):
+            q_score += 0.05
+        elif candidate.bitrate and candidate.bitrate >= 192:
             q_score += 0.04
 
+        # Peer availability: heavily favor peers with immediate open slots and no queue
         if candidate.slots_free and candidate.queue_length == 0:
-            q_score += 0.04
-        elif candidate.queue_length > 5:
+            q_score += 0.05
+        elif candidate.queue_length > 0:
             q_score -= 0.05
 
-        breakdown.quality_score = max(0.0, min(0.12, q_score))
+        breakdown.quality_score = max(0.0, min(0.14, q_score))
 
         # 8. Compute weighted composite score
         # Weights: Artist 0.25, Title 0.35, Duration 0.25, Album 0.10, Quality/Bonus 0.05 + bonuses

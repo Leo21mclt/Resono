@@ -94,7 +94,7 @@ async def resolve_track(track_id: str, db: AsyncSession = Depends(get_db)):
     async def _resolve():
         search_query = f"{track.artist_name} {track.title}"
         logger.info(f"Resolving recording for '{track.title}' by '{track.artist_name}' (query: '{search_query}')")
-        candidates = await soulseek_backend.search(search_query, timeout_seconds=6)
+        candidates = await soulseek_backend.search(search_query, timeout_seconds=4.0, target_track=canonical)
         best = matcher.find_best_match(candidates, canonical)
         if not best:
             raise HTTPException(status_code=404, detail="No confident recording match found on Soulseek network")
@@ -178,6 +178,27 @@ async def stream_track(track_id: str, db: AsyncSession = Depends(get_db)):
     Audio playback & streaming endpoint for Jellyfin.
     Supports HTTP 206 Partial Content (byte-range seeking).
     """
+    # 1. Fast path: Direct on-disk audio cache check for repeat/replay
+    cached = cache_manager.find_cached_file(track_id)
+    if not cached:
+        try:
+            guid = catalog_manager.deterministic_guid(track_id)
+            cached = cache_manager.find_cached_file(guid)
+        except Exception:
+            pass
+
+    if cached:
+        logger.info(f"[PLAYBACK] Instant disk cache hit for '{track_id}' -> {cached.name}")
+        # Asynchronously record playback telemetry without blocking stream
+        async def _record_bg(cid: str, path: Path):
+            try:
+                async with AsyncSessionLocal() as session:
+                    await cache_manager.register_playback(cid, path, path.suffix.lstrip("."), session)
+            except Exception as e:
+                logger.debug(f"Background playback registration error: {e}")
+        asyncio.create_task(_record_bg(track_id, cached))
+        return get_audio_file_response(cached)
+
     track = await catalog_manager.get_track(track_id)
     if not track:
         raise HTTPException(status_code=404, detail="Track not found in catalog")

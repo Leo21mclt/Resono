@@ -26,10 +26,22 @@ class CacheManager:
 
     def find_cached_file(self, canonical_id: str) -> Path | None:
         """Check if any audio file for this canonical ID exists in cache."""
-        for ext in ("flac", "mp3", "m4a", "ogg", "opus", "wav"):
-            p = self.cache_dir / f"{canonical_id}.{ext}"
-            if p.exists() and p.stat().st_size > 0:
-                return p
+        import uuid
+        clean_id = canonical_id.replace("-", "").strip()
+        candidates = [canonical_id]
+        if "-" in canonical_id:
+            candidates.append(clean_id)
+        elif len(clean_id) == 32:
+            try:
+                candidates.append(str(uuid.UUID(hex=clean_id)))
+            except Exception:
+                pass
+
+        for cid in candidates:
+            for ext in ("mp3", "flac", "m4a", "ogg", "opus", "wav"):
+                p = self.cache_dir / f"{cid}.{ext}"
+                if p.exists() and p.stat().st_size > 0:
+                    return p
         return None
 
     def get_total_cache_size_bytes(self) -> int:

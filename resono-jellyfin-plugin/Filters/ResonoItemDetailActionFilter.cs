@@ -398,7 +398,7 @@ namespace Resono.Plugin.Filters
                 {
                     try
                     {
-                        if (isPlaylistsQuery || isSuggestionsQuery || types.Count == 0)
+                        if (isPlaylistsQuery || isSuggestionsQuery)
                         {
                             var charts = await FetchChartsAsync(ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                             if (charts.Count > 0)

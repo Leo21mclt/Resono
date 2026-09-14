@@ -167,23 +167,27 @@ class CatalogManager:
             if res:
                 return res
 
-        # Try SQLite database lookup for canonical UUID
+        # Try SQLite database lookup for canonical UUID or ID
         try:
             from app.db.database import AsyncSessionLocal
             from app.db.models import Track
             from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
             async with AsyncSessionLocal() as session:
-                stmt = select(Track).where(Track.canonical_id == track_id)
+                stmt = select(Track).options(selectinload(Track.artist), selectinload(Track.album)).where((Track.id == track_id) | (Track.spotify_id == track_id))
                 db_res = await session.execute(stmt)
                 t = db_res.scalar_one_or_none()
                 if t:
+                    artist_name = t.artist.name if t.artist else ""
+                    album_title = t.album.title if t.album else ""
+                    artwork_url = t.album.artwork_url if t.album else ""
                     return CatalogTrack(
-                        id=t.canonical_id,
+                        id=t.id,
                         title=t.title,
-                        artist_name=t.artist,
-                        album_title=t.album,
+                        artist_name=artist_name,
+                        album_title=album_title,
                         duration_ms=t.duration_ms,
-                        artwork_url=t.artwork_url
+                        artwork_url=artwork_url
                     )
         except Exception:
             pass

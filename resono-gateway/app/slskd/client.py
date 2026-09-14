@@ -53,8 +53,13 @@ class SlskdClient(SoulseekBackend):
             res.raise_for_status()
             return res.json()
 
-    async def search(self, query: str, timeout_seconds: int | None = None) -> list[AudioCandidate]:
-        timeout = timeout_seconds or settings.SLSKD_SEARCH_TIMEOUT_SECONDS
+    async def search(
+        self,
+        query: str,
+        timeout_seconds: int | float | None = None,
+        target_track: Any | None = None
+    ) -> list[AudioCandidate]:
+        timeout = float(timeout_seconds or settings.SLSKD_SEARCH_TIMEOUT_SECONDS)
         async with self._get_client() as client:
             # 1. Initiate search
             payload = {"searchText": query}
@@ -67,67 +72,100 @@ class SlskdClient(SoulseekBackend):
                 logger.error(f"Search failed to return searchId for query '{query}'")
                 return []
 
-            logger.info(f"Initiated Soulseek search '{query}' (id={search_id}), collecting results for up to {timeout}s...")
+            logger.info(f"Initiated real-time Soulseek search '{query}' (id={search_id}), collecting results (up to {timeout}s)...")
 
-            # 2. Wait and poll search status
-            # NOTE: slskd accumulates results in memory while state is InProgress;
-            # /responses is only populated once the search is completed or stopped.
             elapsed = 0.0
-            poll_interval = 0.5
-            is_complete = False
+            poll_interval = 0.3
+            candidates: list[AudioCandidate] = []
+            found_early_match = False
+
+            # Helper for background stop
+            base_url = self.base_url
+            def _fire_background_stop(sid: str):
+                async def _stop():
+                    try:
+                        async with httpx.AsyncClient(base_url=base_url, timeout=3.0) as cl:
+                            await cl.put(f"/api/v0/searches/{sid}")
+                    except Exception:
+                        pass
+                asyncio.create_task(_stop())
 
             while elapsed < timeout:
                 await asyncio.sleep(poll_interval)
                 elapsed += poll_interval
 
                 try:
+                    # Poll real-time responses directly while search is running
+                    resp_res = await client.get(
+                        f"/api/v0/searches/{search_id}/responses",
+                        params={"offset": 0, "limit": 200},
+                    )
+                    if resp_res.status_code == 200:
+                        responses = resp_res.json()
+                        if isinstance(responses, list) and len(responses) > 0:
+                            candidates = self._parse_responses(responses)
+
+                            # If target_track is provided, score incoming candidates in real-time
+                            if target_track and candidates:
+                                from app.matcher.scoring import matcher
+                                ranked = matcher.find_ranked_matches(candidates, target_track)
+                                if ranked:
+                                    top = ranked[0]
+                                    # Early-exit criteria:
+                                    # High confidence (>= 0.85) with free slots and zero queue,
+                                    # OR solid confidence (>= 0.80) after at least 1.2s
+                                    is_stellar = (
+                                        top.score.total_score >= 0.85
+                                        and top.candidate.slots_free
+                                        and top.candidate.queue_length == 0
+                                    )
+                                    is_solid = (
+                                        elapsed >= 1.2
+                                        and top.score.total_score >= 0.80
+                                        and top.candidate.slots_free
+                                        and top.candidate.queue_length == 0
+                                    )
+                                    if is_stellar or is_solid:
+                                        logger.info(
+                                            f"[SEARCH-REALTIME] Early-exit match at {elapsed:.1f}s! "
+                                            f"Peer: '{top.candidate.peer_id}', file: '{top.candidate.filename}', "
+                                            f"score: {top.score.total_score:.2f} ({top.candidate.codec} {top.candidate.bitrate}k)"
+                                        )
+                                        found_early_match = True
+                                        _fire_background_stop(search_id)
+                                        return [r.candidate for r in ranked]
+                except Exception as e:
+                    logger.debug(f"Polling responses for search {search_id}: {e}")
+
+                # Check if search completed naturally
+                try:
                     status_res = await client.get(f"/api/v0/searches/{search_id}")
                     if status_res.status_code == 200:
                         data = status_res.json()
-                        if isinstance(data, dict):
-                            is_complete = data.get("isComplete", False)
-                            file_count = data.get("fileCount", 0)
-                            response_count = data.get("responseCount", 0)
+                        if isinstance(data, dict) and data.get("isComplete", False):
+                            logger.debug(f"Search {search_id} marked complete by daemon at {elapsed:.1f}s.")
+                            break
+                except Exception:
+                    pass
 
-                            if is_complete:
-                                break
-                            # If we have collected a solid pool of files after at least 3 seconds, stop early
-                            if elapsed >= 3.0 and file_count >= 30:
-                                logger.debug(f"Search {search_id} reached {file_count} files ({response_count} peers) at {elapsed:.1f}s, stopping early.")
-                                break
-                except Exception as e:
-                    logger.debug(f"Polling status for search {search_id}: {e}")
+            if not found_early_match:
+                _fire_background_stop(search_id)
 
-            # 3. Stop search if not already completed so slskd transitions and materializes responses
-            if not is_complete:
+            # Final check for responses if we haven't collected any yet
+            if not candidates:
                 try:
-                    await client.put(f"/api/v0/searches/{search_id}")
-                    # Wait briefly for slskd to transition to isComplete: true
-                    for _ in range(6):  # up to 3s max (typically takes ~0.2-0.5s)
-                        await asyncio.sleep(0.5)
-                        st = await client.get(f"/api/v0/searches/{search_id}")
-                        if st.status_code == 200:
-                            st_data = st.json()
-                            if isinstance(st_data, dict) and st_data.get("isComplete", False):
-                                break
+                    resp_res = await client.get(
+                        f"/api/v0/searches/{search_id}/responses",
+                        params={"offset": 0, "limit": 250},
+                    )
+                    if resp_res.status_code == 200:
+                        responses = resp_res.json()
+                        if isinstance(responses, list):
+                            candidates = self._parse_responses(responses)
                 except Exception as e:
-                    logger.warning(f"Error stopping search {search_id}: {e}")
+                    logger.error(f"Failed to fetch final responses for search {search_id}: {e}")
 
-            # 4. Retrieve materialized responses from slskd
-            candidates: list[AudioCandidate] = []
-            try:
-                resp_res = await client.get(
-                    f"/api/v0/searches/{search_id}/responses",
-                    params={"offset": 0, "limit": 250},
-                )
-                if resp_res.status_code == 200:
-                    responses = resp_res.json()
-                    if isinstance(responses, list):
-                        candidates = self._parse_responses(responses)
-            except Exception as e:
-                logger.error(f"Failed to fetch responses for search {search_id}: {e}")
-
-            logger.info(f"Completed search '{query}' with {len(candidates)} total candidates.")
+            logger.info(f"Completed search '{query}' at {elapsed:.1f}s with {len(candidates)} total candidates.")
             return candidates
 
     def _parse_responses(self, responses: list[dict[str, Any]]) -> list[AudioCandidate]:

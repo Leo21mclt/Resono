@@ -90,15 +90,15 @@ class AcquisitionManager:
         # Clean query: strip parentheticals (feat., deluxe, etc.) for Soulseek's strict AND search
         clean_title = re.sub(r"\s*[\(\[\{].*?[\)\]\}]", "", track.title).strip()
         search_query = f"{track.artist_name} {clean_title or track.title}".strip()
-        logger.info(f"[SEARCH] Querying Soulseek network for '{search_query}'...")
-        candidates = await soulseek_backend.search(search_query, timeout_seconds=6)
+        logger.info(f"[SEARCH] Querying Soulseek network in real-time for '{search_query}'...")
+        candidates = await soulseek_backend.search(search_query, timeout_seconds=4.0, target_track=track)
         logger.info(f"[SEARCH] Found {len(candidates)} candidate files across network")
 
         # Fallback search if clean query returned few candidates and title had extra details
-        if len(candidates) < 3 and clean_title != track.title:
+        if len(candidates) < 2 and clean_title != track.title:
             alt_query = f"{track.artist_name} {track.title}".strip()
             logger.info(f"[SEARCH] Low candidate count ({len(candidates)}), trying alternate query: '{alt_query}'")
-            alt_candidates = await soulseek_backend.search(alt_query, timeout_seconds=4)
+            alt_candidates = await soulseek_backend.search(alt_query, timeout_seconds=3.0, target_track=track)
             candidates.extend(alt_candidates)
 
         ranked = matcher.find_ranked_matches(candidates, track)
