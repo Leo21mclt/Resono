@@ -477,6 +477,18 @@ namespace Resono.Plugin.Filters
                                         {
                                             albums.Add(ResonoSearchActionFilter.BuildAlbumDto(albId, albEntry));
                                         }
+                                        else
+                                        {
+                                            var newAlb = new ResonoItemCache.Entry
+                                            {
+                                                Kind = "album",
+                                                Name = t.Album,
+                                                ArtistName = t.AlbumArtist ?? t.Artists?.FirstOrDefault(),
+                                                Id = albId
+                                            };
+                                            _cache.Set(albId, newAlb);
+                                            albums.Add(ResonoSearchActionFilter.BuildAlbumDto(albId, newAlb));
+                                        }
                                     }
                                 }
                                 qr.Items = albums.ToArray();

@@ -665,14 +665,9 @@ namespace Resono.Plugin.Filters
                 RunTimeTicks = e.DurationMs.HasValue ? (long)e.DurationMs.Value * 10000 : null,
                 IsFolder = false,
                 CanDownload = false,
-                LocationType = LocationType.Virtual,
+                LocationType = LocationType.FileSystem,
                 MediaSources = new[] { mediaSource },
                 MediaSourceCount = 1,
-                CanPlay = true,
-                PlayAccess = PlayAccess.Full,
-                SupportsDirectPlay = true,
-                SupportsDirectStream = true,
-                SupportsTranscoding = true,
                 Container = "mp3",
             };
         }
