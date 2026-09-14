@@ -81,6 +81,10 @@ namespace Resono.Plugin.Filters
                         for (int hop = 0; hop < 5; hop++)
                         {
                             var forwardReq = new HttpRequestMessage(HttpMethod.Get, currentUrl);
+                            if (!string.IsNullOrWhiteSpace(cfg?.DeezerArl))
+                            {
+                                forwardReq.Headers.TryAddWithoutValidation("X-Deezer-Arl", cfg.DeezerArl.Trim());
+                            }
                             if (req.Headers.TryGetValue("Range", out var rangeVal))
                             {
                                 forwardReq.Headers.TryAddWithoutValidation("Range", rangeVal.ToString());

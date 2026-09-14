@@ -72,8 +72,16 @@ class AcquisitionManager:
         # 1. Immediate cache check
         cached = cache_manager.find_cached_file(track.canonical_id)
         if cached:
-            logger.info(f"[PLAYBACK] Cache hit for '{track.title}' (canonical_id: {track.canonical_id})")
-            return cached
+            from app.core.deezer_stream import is_valid_audio_file
+            if is_valid_audio_file(cached):
+                logger.info(f"[PLAYBACK] Cache hit for '{track.title}' (canonical_id: {track.canonical_id})")
+                return cached
+            else:
+                logger.warning(f"[PLAYBACK] Cached file for '{track.title}' is corrupt or un-decrypted. Purging and re-acquiring...")
+                try:
+                    cached.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         # 2. Coalesce uncached acquisition job
         async def _do_acquire() -> Path:

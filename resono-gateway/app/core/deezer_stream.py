@@ -157,7 +157,11 @@ class DeezerStreamer:
 
             stream_url = sources[0].get("url")
             chosen_format = chosen.get("format", "MP3_320")
-            chosen_cipher = chosen.get("cipher", "BF_CBC_STRIPE")
+            raw_cipher = chosen.get("cipher", "BF_CBC_STRIPE")
+            if isinstance(raw_cipher, dict):
+                chosen_cipher = raw_cipher.get("type", "BF_CBC_STRIPE")
+            else:
+                chosen_cipher = str(raw_cipher)
 
             return stream_url, chosen_format, chosen_cipher
         except Exception as e:
@@ -219,6 +223,9 @@ class DeezerStreamer:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = target_path.with_suffix(".tmp")
 
+            cipher_str = cipher_type.get("type", "BF_CBC_STRIPE") if isinstance(cipher_type, dict) else str(cipher_type)
+            is_encrypted = "BF" in cipher_str.upper() or "STRIPE" in cipher_str.upper()
+
             try:
                 bf_key = get_blowfish_key(track_id)
                 start_time = time.time()
@@ -238,7 +245,7 @@ class DeezerStreamer:
                                 block = bytes(buffer[:CHUNK_SIZE])
                                 del buffer[:CHUNK_SIZE]
 
-                                if cipher_type == "BF_CBC_STRIPE" and chunk_index % 3 == 0:
+                                if is_encrypted and chunk_index % 3 == 0:
                                     cipher = Cipher(algorithms.Blowfish(bf_key), modes.CBC(DEEZER_IV))
                                     decryptor = cipher.decryptor()
                                     decrypted = decryptor.update(block)
@@ -258,10 +265,12 @@ class DeezerStreamer:
                 rate = mb / max(elapsed, 0.001)
                 logger.info(f"[DEEZER-ARL] Acquired {mb:.2f} MB in {elapsed:.2f}s ({rate:.2f} MB/s) -> {target_path.name}")
 
-                if temp_path.exists() and temp_path.stat().st_size > 10000:
+                if temp_path.exists() and is_valid_audio_file(temp_path):
                     temp_path.replace(target_path)
+                    logger.info(f"[DEEZER-ARL] Verified valid audio stream for track {track_id} -> {target_path.name}")
                     return True
                 else:
+                    logger.error(f"[DEEZER-ARL] Track {track_id} failed audio validation (corrupt or encrypted)")
                     if temp_path.exists():
                         temp_path.unlink()
                     return False
@@ -270,6 +279,26 @@ class DeezerStreamer:
                 if temp_path.exists():
                     temp_path.unlink()
                 return False
+
+
+def is_valid_audio_file(path: Path) -> bool:
+    """Verify that file exists, has sufficient size, and begins with a valid audio sync frame or container tag."""
+    if not path.exists() or path.stat().st_size < 10000:
+        return False
+    try:
+        with open(path, "rb") as f:
+            header = f.read(16)
+        if not header or len(header) < 2:
+            return False
+        # ID3 header, FLAC magic, RIFF (WAV), OggS
+        if header.startswith(b"ID3") or header.startswith(b"fLaC") or header.startswith(b"RIFF") or header.startswith(b"OggS"):
+            return True
+        # MP3 sync frame (0xFF 0xFB, 0xFA, 0xF3, 0xF2, etc.)
+        if header[0] == 0xFF and (header[1] & 0xE0) == 0xE0:
+            return True
+        return False
+    except Exception:
+        return False
 
 
 deezer_streamer = DeezerStreamer()
