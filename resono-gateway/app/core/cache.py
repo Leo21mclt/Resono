@@ -44,6 +44,38 @@ class CacheManager:
                     return p
         return None
 
+    async def find_cached_by_metadata(self, title: str, artist: str, db: AsyncSession) -> Path | None:
+        """Find if a track with the same title & artist was already cached under any provider ID."""
+        try:
+            from app.db.models import Track
+            from app.matcher.tokenizer import tokenize, token_similarity
+            from sqlalchemy.orm import selectinload
+
+            stmt = select(Track).options(selectinload(Track.artist))
+            res = await db.execute(stmt)
+            tracks = res.scalars().all()
+
+            target_title_tokens = tokenize(title)
+            target_artist_tokens = tokenize(artist)
+
+            for t in tracks:
+                if not t.artist:
+                    continue
+                t_title_tokens = tokenize(t.title)
+                t_artist_tokens = tokenize(t.artist.name)
+
+                title_sim = token_similarity(target_title_tokens, t_title_tokens)
+                artist_sim = token_similarity(target_artist_tokens, t_artist_tokens)
+
+                if (title_sim >= 0.80 or target_title_tokens.issubset(t_title_tokens)) and (artist_sim >= 0.75 or target_artist_tokens.issubset(t_artist_tokens)):
+                    p = self.find_cached_file(t.id)
+                    if p:
+                        logger.info(f"[CACHE] Cross-provider cache hit: '{artist} - {title}' matched existing '{t.artist.name} - {t.title}' ({p.name})")
+                        return p
+        except Exception as e:
+            logger.debug(f"Metadata cache lookup failed: {e}")
+        return None
+
     def get_total_cache_size_bytes(self) -> int:
         total = 0
         for entry in self.cache_dir.glob("*.*"):

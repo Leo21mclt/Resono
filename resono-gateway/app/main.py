@@ -131,8 +131,11 @@ async def _do_stream(track: CatalogTrack, db: AsyncSession):
     await catalog_manager.sync_track_to_db(track, db)
     canonical = catalog_manager.to_canonical_track(track)
 
-    # 1. Check local on-disk audio cache
+    # 1. Check local on-disk audio cache (by ID and by metadata)
     cached = cache_manager.find_cached_file(canonical.canonical_id)
+    if not cached:
+        cached = await cache_manager.find_cached_by_metadata(track.title, track.artist_name, db)
+
     if cached:
         logger.info(f"[PLAYBACK] Cache hit for '{track.title}' (canonical_id: {canonical.canonical_id})")
         return get_audio_file_response(cached)

@@ -314,6 +314,7 @@ namespace Resono.Plugin.Filters
                             ArtistName = t.ArtistName,
                             AlbumName = t.AlbumName,
                             SpotifyId = t.Id,
+                            CanonicalId = t.CanonicalId,
                             ImageUrl = t.ImageUrl,
                             DurationMs = t.DurationMs,
                             TrackNumber = t.TrackNumber,

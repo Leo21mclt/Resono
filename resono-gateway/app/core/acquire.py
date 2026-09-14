@@ -19,6 +19,19 @@ from app.db.models import SourceMapping, DownloadJob
 
 logger = logging.getLogger("resono.acquire")
 
+def clean_for_soulseek(text: str) -> str:
+    """Normalize quotes, remove parentheticals, and strip troublesome punctuation for Soulseek."""
+    text = text.replace("’", "'").replace("‘", "'").replace("`", "'").replace("´", "'")
+    text = text.replace("“", '"').replace("”", '"')
+    text = re.sub(r"\s*[\(\[\{].*?[\)\]\}]", "", text)
+    text = re.sub(r"[#\$%\*:\?\/\\\|_\-\+]", " ", text)
+    return " ".join(text.split()).strip()
+
+def get_primary_artist(artist: str) -> str:
+    """Extract primary artist before collaborations or featured guests."""
+    parts = re.split(r",|\s+(?:feat\.?|ft\.?|&|x|\+|with)\s+", artist, flags=re.IGNORECASE)
+    return parts[0].strip() if parts else artist
+
 class AcquisitionManager:
     """
     Orchestrates the complete audio acquisition lifecycle:
@@ -84,22 +97,25 @@ class AcquisitionManager:
                 known_source.failure_count += 1
                 await db.commit()
 
+
         # -------------------------------------------------------------
         # STEP 2: Distributed Search & Exact Matching
         # -------------------------------------------------------------
-        # Clean query: strip parentheticals (feat., deluxe, etc.) for Soulseek's strict AND search
-        clean_title = re.sub(r"\s*[\(\[\{].*?[\)\]\}]", "", track.title).strip()
-        search_query = f"{track.artist_name} {clean_title or track.title}".strip()
-        logger.info(f"[SEARCH] Querying Soulseek network in real-time for '{search_query}'...")
-        candidates = await soulseek_backend.search(search_query, timeout_seconds=4.0, target_track=track)
+        clean_title = clean_for_soulseek(track.title) or track.title
+        primary_artist = clean_for_soulseek(get_primary_artist(track.artist_name)) or track.artist_name
+        search_query = f"{primary_artist} {clean_title}".strip()
+        logger.info(f"[SEARCH] Querying Soulseek network for '{search_query}'...")
+        candidates = await soulseek_backend.search(search_query)
         logger.info(f"[SEARCH] Found {len(candidates)} candidate files across network")
 
-        # Fallback search if clean query returned few candidates and title had extra details
-        if len(candidates) < 2 and clean_title != track.title:
-            alt_query = f"{track.artist_name} {track.title}".strip()
-            logger.info(f"[SEARCH] Low candidate count ({len(candidates)}), trying alternate query: '{alt_query}'")
-            alt_candidates = await soulseek_backend.search(alt_query, timeout_seconds=3.0, target_track=track)
-            candidates.extend(alt_candidates)
+        # Fallback search if primary artist query returned few candidates
+        if len(candidates) < 2:
+            alt_artist = clean_for_soulseek(track.artist_name)
+            alt_query = f"{alt_artist} {clean_title}".strip()
+            if alt_query != search_query:
+                logger.info(f"[SEARCH] Low candidate count ({len(candidates)}), trying alternate query: '{alt_query}'")
+                alt_candidates = await soulseek_backend.search(alt_query)
+                candidates.extend(alt_candidates)
 
         ranked = matcher.find_ranked_matches(candidates, track)
         if not ranked:
@@ -174,7 +190,7 @@ class AcquisitionManager:
     async def _await_download_completion(self, candidate: AudioCandidate, timeout_seconds: int = 60) -> Path | None:
         """Poll the daemon until download completes, aborting early if queued with no progress."""
         elapsed = 0.0
-        poll_interval = 1.0
+        poll_interval = 0.25
         consecutive_queued_seconds = 0.0
 
         while elapsed < timeout_seconds:
