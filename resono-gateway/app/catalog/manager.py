@@ -146,8 +146,8 @@ class CatalogManager:
         if prefix in ("mb", "musicbrainz"):
             return await self.providers["musicbrainz"].get_artist(artist_id)
 
-        # Fallback search across providers
-        for prov in (self.providers["apple"], self.providers["deezer"], self.providers["spotify"]):
+        # Fallback search across providers (Deezer first for real HD portraits)
+        for prov in (self.providers["deezer"], self.providers["spotify"], self.providers["apple"]):
             res = await prov.get_artist(artist_id)
             if res:
                 return res

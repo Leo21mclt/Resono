@@ -94,7 +94,12 @@ class DeezerProvider(CatalogProvider):
             return CatalogSearchResult()
 
     async def get_artist(self, artist_id: str) -> CatalogArtist | None:
-        raw_id = artist_id.replace("deezer:artist:", "")
+        raw_id = artist_id.replace("deezer:artist:", "").strip()
+        if not raw_id.isdigit():
+            artists = await self.search_artists(raw_id, limit=1)
+            if artists:
+                return artists[0]
+            return None
         try:
             async with self._get_client() as client:
                 res = await client.get(f"/artist/{raw_id}")

@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import shutil
+import time
 import logging
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,27 @@ from app.matcher.scoring import matcher
 from app.db.models import SourceMapping, DownloadJob
 
 logger = logging.getLogger("resono.acquire")
+
+# In-memory transient blacklist for unreachable/firewalled/stalled Soulseek peers
+_FAILED_PEERS: dict[str, float] = {}
+
+def blacklist_peer(username: str, duration_sec: float = 900.0):
+    if username:
+        clean = username.lower().strip()
+        _FAILED_PEERS[clean] = time.time() + duration_sec
+        logger.warning(f"[BLACKLIST] Peer '{username}' blacklisted for {int(duration_sec)}s")
+
+def is_peer_blacklisted(username: str) -> bool:
+    if not username:
+        return False
+    clean = username.lower().strip()
+    exp = _FAILED_PEERS.get(clean)
+    if exp:
+        if time.time() < exp:
+            return True
+        else:
+            _FAILED_PEERS.pop(clean, None)
+    return False
 
 def clean_for_soulseek(text: str) -> str:
     """Normalize quotes, remove parentheticals, and strip troublesome punctuation for Soulseek."""
@@ -117,7 +139,14 @@ class AcquisitionManager:
                 alt_candidates = await soulseek_backend.search(alt_query)
                 candidates.extend(alt_candidates)
 
-        ranked = matcher.find_ranked_matches(candidates, track)
+        # Filter out blacklisted / unreachable peers
+        active_candidates = [c for c in candidates if not is_peer_blacklisted(c.peer_id)]
+        if not active_candidates and candidates:
+            logger.warning("[SEARCH] All candidates were from blacklisted peers; resetting blacklist to retry.")
+            _FAILED_PEERS.clear()
+            active_candidates = candidates
+
+        ranked = matcher.find_ranked_matches(active_candidates, track)
         if not ranked:
             logger.warning(f"[MATCH] No candidate met confidence threshold >= {settings.MATCHER_CONFIDENCE_THRESHOLD}")
             raise FileNotFoundError(f"No confident recording match found on Soulseek for '{track.title}'")
@@ -127,7 +156,7 @@ class AcquisitionManager:
         # -------------------------------------------------------------
         for match_idx, matched in enumerate(ranked[:3], 1):
             candidate = matched.candidate
-            logger.info(f"[ACQUIRE] Attempting candidate #{match_idx}: peer={candidate.peer_id} file='{candidate.filename}' score={matched.score.total_score} (free_slot={candidate.slots_free}, queue={candidate.queue_length})")
+            logger.info(f"[ACQUIRE] Attempting candidate #{match_idx}: peer={candidate.peer_id} file='{candidate.filename}' score={matched.score.total_score} (free_slot={candidate.slots_free}, queue={candidate.queue_length}, speed={candidate.upload_speed})")
             final_path = await self._attempt_download_and_cache(candidate, track, db)
             if final_path:
                 # Record initial source mapping
@@ -144,6 +173,7 @@ class AcquisitionManager:
                 )
                 return final_path
             else:
+                blacklist_peer(candidate.peer_id, duration_sec=600.0)
                 logger.warning(f"[ACQUIRE] Candidate #{match_idx} from peer {candidate.peer_id} failed or stalled. Trying next candidate...")
 
         raise FileNotFoundError(f"Failed to acquire recording for '{track.title}' after trying available candidates.")
@@ -155,14 +185,17 @@ class AcquisitionManager:
             enqueued = await soulseek_backend.enqueue_download(candidate)
             if not enqueued:
                 logger.warning(f"[DOWNLOAD] Daemon rejected transfer for peer {candidate.peer_id}")
+                blacklist_peer(candidate.peer_id, duration_sec=600.0)
                 return None
         except Exception as e:
             logger.warning(f"[DOWNLOAD] Exception enqueuing download for {candidate.peer_id}: {e}")
+            blacklist_peer(candidate.peer_id, duration_sec=600.0)
             return None
 
-        # Poll transfer status
-        downloaded_file = await self._await_download_completion(candidate, timeout_seconds=60)
+        # Poll transfer status with fast 15s max timeout (fails fast in 3s if stalled)
+        downloaded_file = await self._await_download_completion(candidate, timeout_seconds=15)
         if not downloaded_file:
+            blacklist_peer(candidate.peer_id, duration_sec=600.0)
             return None
 
         # Atomic Cache Write & Mutagen Validation
@@ -187,11 +220,11 @@ class AcquisitionManager:
             logger.error(f"[ACQUIRE] Cache write error for peer {candidate.peer_id}: {e}")
             return None
 
-    async def _await_download_completion(self, candidate: AudioCandidate, timeout_seconds: int = 60) -> Path | None:
-        """Poll the daemon until download completes, aborting early if queued with no progress."""
+    async def _await_download_completion(self, candidate: AudioCandidate, timeout_seconds: int = 15) -> Path | None:
+        """Poll the daemon until download completes, aborting early if queued or stalled with no progress."""
         elapsed = 0.0
-        poll_interval = 0.25
-        consecutive_queued_seconds = 0.0
+        poll_interval = 0.2
+        consecutive_zero_bytes_seconds = 0.0
 
         while elapsed < timeout_seconds:
             await asyncio.sleep(poll_interval)
@@ -203,6 +236,7 @@ class AcquisitionManager:
                     download_id = progress_info.get("id")
                     if progress_info.get("is_failed"):
                         logger.error(f"[DOWNLOAD] Transfer failed on daemon: {progress_info.get('state')}")
+                        blacklist_peer(candidate.peer_id, duration_sec=900.0)
                         if download_id:
                             await soulseek_backend.cancel_download(download_id, username=candidate.peer_id)
                         return None
@@ -212,15 +246,19 @@ class AcquisitionManager:
                         break
 
                     bytes_transferred = progress_info.get("bytes_transferred", 0)
-                    if progress_info.get("is_queued") and bytes_transferred == 0:
-                        consecutive_queued_seconds += poll_interval
-                        if consecutive_queued_seconds >= 8.0:
-                            logger.warning(f"[DOWNLOAD] Peer {candidate.peer_id} stalled in queue ({consecutive_queued_seconds:.0f}s with 0 bytes). Aborting.")
+                    if bytes_transferred == 0:
+                        consecutive_zero_bytes_seconds += poll_interval
+                        # Fast abort if peer is stuck in queue (> 2.5s) or has sent 0 bytes (> 3.2s)
+                        is_queued = progress_info.get("is_queued", False)
+                        threshold = 2.5 if is_queued else 3.2
+                        if consecutive_zero_bytes_seconds >= threshold:
+                            logger.warning(f"[DOWNLOAD] Peer {candidate.peer_id} stalled ({consecutive_zero_bytes_seconds:.1f}s with 0 bytes, queued={is_queued}). Aborting.")
+                            blacklist_peer(candidate.peer_id, duration_sec=600.0)
                             if download_id:
                                 await soulseek_backend.cancel_download(download_id, username=candidate.peer_id)
                             return None
                     else:
-                        consecutive_queued_seconds = 0.0
+                        consecutive_zero_bytes_seconds = 0.0
 
             local_found = self._find_downloaded_file(candidate)
             if local_found and local_found.stat().st_size > 0:

@@ -162,15 +162,19 @@ class ExactRecordingMatcher:
     @staticmethod
     def candidate_rank_key(s: ScoredCandidate):
         c = s.candidate
-        # 1. Immediate availability: free upload slot AND empty queue is top priority
-        immediate = 1 if (c.slots_free and c.queue_length == 0) else 0
-        # 2. Total match score (FLAC / high bitrate / exact tags)
+        # 1. Immediate availability: free upload slot AND empty queue
+        has_immediate_slot = 1 if (c.slots_free and c.queue_length == 0) else 0
+        # 2. Fast responsive peer: has reported upload speed > 100 KB/s
+        has_speed = 1 if (c.upload_speed and c.upload_speed > 100_000) else 0
+        # 3. Fast download candidate (MP3 320k or size < 18MB streams in <1s)
+        is_fast_file = 1 if (c.codec.lower() in ("mp3", "m4a") or (c.size_bytes and c.size_bytes < 18_000_000)) else 0
+        # 4. Total match score
         score = s.score.total_score
-        # 3. Penalize long queues
+        # 5. Queue penalty
         queue_penalty = -c.queue_length if c.queue_length < 50 else -50
-        # 4. Upload speed
+        # 6. Upload speed
         speed = c.upload_speed or 0
-        return (immediate, score, queue_penalty, speed)
+        return (has_immediate_slot, has_speed, is_fast_file, score, queue_penalty, speed)
 
     def find_ranked_matches(self, candidates: list[AudioCandidate], track: CanonicalTrack) -> list[ScoredCandidate]:
         scored = [self.score_candidate(c, track) for c in candidates]

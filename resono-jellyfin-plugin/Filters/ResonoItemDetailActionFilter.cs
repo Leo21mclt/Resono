@@ -389,12 +389,15 @@ namespace Resono.Plugin.Filters
             if (cfg != null && cfg.EnableVirtualPlaylists && ctx.Result is ObjectResult or && or.Value is QueryResult<BaseItemDto> qr)
             {
                 var types = ExtractIncludeItemTypes(req);
-                bool isPlaylistsQuery = types.Contains("Playlist") || path.IndexOf("/Playlists", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isUserViews = path.IndexOf("/UserViews", StringComparison.OrdinalIgnoreCase) >= 0 || path.IndexOf("/Views", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isPlaylistsQuery = !isUserViews && (types.Contains("Playlist") || path.IndexOf("/Playlists", StringComparison.OrdinalIgnoreCase) >= 0);
                 bool isSuggestionsQuery = path.IndexOf("/Suggestions", StringComparison.OrdinalIgnoreCase) >= 0;
                 bool isSongsQuery = types.Contains("Audio");
+                bool isArtistsQuery = types.Contains("MusicArtist");
+                bool isAlbumsQuery = types.Contains("MusicAlbum");
 
                 bool hasSearchTerm = req.Query.ContainsKey("searchTerm") || req.Query.ContainsKey("SearchTerm") || req.Query.ContainsKey("nameStartsWithOrGreater");
-                if (!hasSearchTerm)
+                if (!hasSearchTerm && !isUserViews)
                 {
                     try
                     {
@@ -415,9 +418,69 @@ namespace Resono.Plugin.Filters
                             var chartTracks = await FetchChartTracksAsync("global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                             if (chartTracks != null && chartTracks.Count > 0)
                             {
-                                var songItems = chartTracks.ToArray();
-                                qr.Items = songItems;
-                                qr.TotalRecordCount = songItems.Length;
+                                qr.Items = chartTracks.ToArray();
+                                qr.TotalRecordCount = chartTracks.Count;
+                            }
+                        }
+                        else if (qr.TotalRecordCount == 0 && isArtistsQuery)
+                        {
+                            var chartTracks = await FetchChartTracksAsync("global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                            if (chartTracks != null && chartTracks.Count > 0)
+                            {
+                                var artists = new List<BaseItemDto>();
+                                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                foreach (var t in chartTracks)
+                                {
+                                    if (t.ArtistItems != null)
+                                    {
+                                        foreach (var a in t.ArtistItems)
+                                        {
+                                            if (!string.IsNullOrEmpty(a.Name) && seen.Add(a.Name))
+                                            {
+                                                var aId = a.Id;
+                                                if (_cache.TryGet(aId, out var aEntry))
+                                                {
+                                                    artists.Add(ResonoSearchActionFilter.BuildArtistDto(aId, aEntry));
+                                                }
+                                                else
+                                                {
+                                                    var newEntry = new ResonoItemCache.Entry
+                                                    {
+                                                        Kind = "artist",
+                                                        Name = a.Name,
+                                                        Id = aId
+                                                    };
+                                                    _cache.Set(aId, newEntry);
+                                                    artists.Add(ResonoSearchActionFilter.BuildArtistDto(aId, newEntry));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                qr.Items = artists.ToArray();
+                                qr.TotalRecordCount = artists.Count;
+                            }
+                        }
+                        else if (qr.TotalRecordCount == 0 && isAlbumsQuery)
+                        {
+                            var chartTracks = await FetchChartTracksAsync("global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                            if (chartTracks != null && chartTracks.Count > 0)
+                            {
+                                var albums = new List<BaseItemDto>();
+                                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                                foreach (var t in chartTracks)
+                                {
+                                    if (t.AlbumId.HasValue && !string.IsNullOrEmpty(t.Album) && seen.Add(t.Album))
+                                    {
+                                        var albId = t.AlbumId.Value;
+                                        if (_cache.TryGet(albId, out var albEntry))
+                                        {
+                                            albums.Add(ResonoSearchActionFilter.BuildAlbumDto(albId, albEntry));
+                                        }
+                                    }
+                                }
+                                qr.Items = albums.ToArray();
+                                qr.TotalRecordCount = albums.Count;
                             }
                         }
                     }

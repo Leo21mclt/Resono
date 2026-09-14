@@ -347,12 +347,15 @@ namespace Resono.Plugin.Filters
                         }
                         if (artistId.HasValue && !string.IsNullOrEmpty(t.ArtistName))
                         {
-                            _cache.Set(artistId.Value, new ResonoItemCache.Entry
+                            if (!_cache.TryGet(artistId.Value, out _))
                             {
-                                Kind = "artist",
-                                Name = t.ArtistName,
-                                ImageUrl = t.ImageUrl
-                            });
+                                _cache.Set(artistId.Value, new ResonoItemCache.Entry
+                                {
+                                    Kind = "artist",
+                                    Name = t.ArtistName,
+                                    Id = artistId.Value
+                                });
+                            }
                         }
                         additions.Add(BuildTrackDto(id, entry));
                     }
@@ -506,12 +509,15 @@ namespace Resono.Plugin.Filters
 
                     if (artistId.HasValue && !string.IsNullOrEmpty(t.ArtistName))
                     {
-                        _cache.Set(artistId.Value, new ResonoItemCache.Entry
+                        if (!_cache.TryGet(artistId.Value, out _))
                         {
-                            Kind = "artist",
-                            Name = t.ArtistName,
-                            ImageUrl = t.ImageUrl
-                        });
+                            _cache.Set(artistId.Value, new ResonoItemCache.Entry
+                            {
+                                Kind = "artist",
+                                Name = t.ArtistName,
+                                Id = artistId.Value
+                            });
+                        }
                     }
 
                     if (existingIds.Add(id))
@@ -661,6 +667,13 @@ namespace Resono.Plugin.Filters
                 CanDownload = false,
                 LocationType = LocationType.Virtual,
                 MediaSources = new[] { mediaSource },
+                MediaSourceCount = 1,
+                CanPlay = true,
+                PlayAccess = PlayAccess.Full,
+                SupportsDirectPlay = true,
+                SupportsDirectStream = true,
+                SupportsTranscoding = true,
+                Container = "mp3",
             };
         }
     }

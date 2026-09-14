@@ -3,7 +3,7 @@ from typing import Any
 from pathlib import Path
 from contextlib import asynccontextmanager
 import asyncio
-from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi import FastAPI, HTTPException, Query, Depends, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -174,9 +174,9 @@ async def stream_query(
     return await _do_stream(search_res.tracks[0], db)
 
 
-@app.get("/playback/{track_id:path}")
-@app.get("/stream/{track_id:path}")
-async def stream_track(track_id: str, db: AsyncSession = Depends(get_db)):
+@app.api_route("/playback/{track_id:path}", methods=["GET", "HEAD"])
+@app.api_route("/stream/{track_id:path}", methods=["GET", "HEAD"])
+async def stream_track(track_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Audio playback & streaming endpoint for Jellyfin.
     Supports HTTP 206 Partial Content (byte-range seeking).
