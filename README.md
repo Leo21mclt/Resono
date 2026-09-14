@@ -19,11 +19,11 @@ Catalog Providers  Live Stream     Soulseek (slskd)
 ## Features
 
 - **Multi-Provider Metadata**: Lightning-fast, zero-credential music catalog powered by Apple Music (iTunes API) and Deezer API with high-resolution portraits and album artwork (up to 1400x1400).
-- **Instant Hybrid Streaming**: Overlap live streams instantaneously while queuing lossless FLAC/320kbps MP3 acquisition via Soulseek in the background.
+- **Pure Lossless & Hi-Fi Streaming**: Direct audio acquisition from the decentralized Soulseek network via `slskd`, cached on-disk and served via seekable HTTP 206 Partial Content streams.
+- **Strict Anti-Cover & Match Scoring**: High-precision track duration matching (±4s) and automatic disqualification of covers, karaoke, remixes, live recordings, and locked peer shares.
 - **Synchronized Karaoke Lyrics**: Millisecond-accurate synchronized lyrics powered by LrcLib rendered in real-time in Jellyfin Web and mobile apps.
 - **Spotify-Like Artist Profiles**: Full artist view with top played songs, complete discography, albums, and related artists.
 - **Virtual Discovery Playlists**: Configurable Top 50 Global, Top 50 Country (e.g. USA, Peru, Spain, Mexico, Argentina), and Trending charts injected directly into your library.
-- **Decentralized Lossless Backend**: Seamless background acquisition from the Soulseek network via `slskd`.
 - **Forensic Audio Validation**: Inspection using `mutagen` for header integrity, bitrates, audio channels, and duration tolerance before caching.
 - **Native Jellyfin Integration**: Zero core modifications. Installs via Jellyfin Plugin Repository (`manifest.json`) or standalone DLL.
 
@@ -65,7 +65,6 @@ Resono/
 The root `docker-compose.yml` integrates the entire production stack into a single Dokploy Compose project (`music-stack-jellyfinmediaserver-q8vogu`):
 
 - `jellyfin`: Jellyfin media server (`8096:8096`)
-- `ytmusic-stream-server`: Legacy discovery stream server (`8081:8081`)
 - `slskd`: Soulseek acquisition daemon (`5030:5030`, `2234:2234`)
 - `resono-gateway`: Resono virtual gateway and cache manager (`8080:8080`)
 
@@ -83,7 +82,7 @@ The root `docker-compose.yml` integrates the entire production stack into a sing
     - resono-cache:/app/cache
   ```
 - **Acquisition Lifecycle**: `slskd` downloads audio into `slskd-downloads` (`/app/downloads`); Resono Gateway reads completed files from `/downloads:ro`, forensically validates audio integrity via `mutagen`, and atomically copies verified audio into `resono-cache`.
-- **Zero Disruption**: Existing services (`jellyfin`, `slskd`, `ytmusic-stream-server`) are preserved and continue operating normally.
+- **Zero Disruption**: Existing services (`jellyfin`, `slskd`) are preserved and continue operating normally.
 
 ### Configuration
 In Dokploy (or your `.env` file):

@@ -62,6 +62,12 @@ class ExactRecordingMatcher:
         path_parts = full_path.split("/")
         basename = candidate.filename or (path_parts[-1] if path_parts else full_path)
 
+        # 0. Reject locked private shares immediately
+        if getattr(candidate, "is_locked", False):
+            breakdown.rejected = True
+            breakdown.rejection_reason = "File is locked by peer (private share)"
+            return ScoredCandidate(candidate=candidate, score=breakdown)
+
         # 1. Unwanted tag rejection check
         unwanted_tag = has_unwanted_tags(full_path, track.title)
         if unwanted_tag:

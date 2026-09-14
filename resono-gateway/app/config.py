@@ -16,7 +16,6 @@ class Settings(BaseSettings):
     SLSKR_API_KEY: str | None = None
     SLSKD_TIMEOUT_SECONDS: int = 15
     SLSKD_SEARCH_TIMEOUT_SECONDS: int = 6
-    YTMUSIC_STREAM_URL: str = "http://ytmusic-stream-server:8081"
 
     # Catalog Provider settings
     CATALOG_PROVIDER: str = "apple"  # "apple" | "deezer" | "spotify" | "musicbrainz"

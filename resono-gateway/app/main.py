@@ -122,48 +122,32 @@ async def resolve_track(track_id: str, db: AsyncSession = Depends(get_db)):
     return await job_manager.get_or_create(track.id, _resolve)
 
 async def _do_stream(track: CatalogTrack, db: AsyncSession):
-    """Common streaming logic: cache → ytmusic → soulseek."""
+    """
+    Soulseek-native audio streaming logic:
+    1. Check verified local on-disk audio cache.
+    2. If miss: Acquire track directly from Soulseek (SLSKD) with forensic validation.
+    3. Return byte-range seekable HTTP 206 audio stream.
+    """
     await catalog_manager.sync_track_to_db(track, db)
     canonical = catalog_manager.to_canonical_track(track)
+
     # 1. Check local on-disk audio cache
     cached = cache_manager.find_cached_file(canonical.canonical_id)
     if cached:
-        logger.info(f"[PLAYBACK] Cache hit for '{track.title}'")
+        logger.info(f"[PLAYBACK] Cache hit for '{track.title}' (canonical_id: {canonical.canonical_id})")
         return get_audio_file_response(cached)
 
-    # 2. Instant live playback via ytmusic-stream-server
-    ytmusic_url = getattr(settings, "YTMUSIC_STREAM_URL", "http://ytmusic-stream-server:8081").rstrip("/")
-    try:
-        async with httpx.AsyncClient(timeout=4.0, follow_redirects=False) as client:
-            res = await client.get(
-                f"{ytmusic_url}/stream",
-                params={"artist": track.artist_name, "title": track.title}
-            )
-            if res.status_code in (301, 302, 303, 307, 308):
-                cdn_url = res.headers.get("Location")
-                if cdn_url:
-                    logger.info(f"[PLAYBACK] Instant stream redirect for '{track.title}' -> CDN")
-                    async def _bg_acquire(canonical_track):
-                        try:
-                            async with AsyncSessionLocal() as session:
-                                await acquisition_manager.acquire_track_audio(canonical_track, session)
-                        except Exception as exc:
-                            logger.warning(f"[PLAYBACK] Background acquisition failed for '{canonical_track.title}': {exc}")
-
-                    asyncio.create_task(_bg_acquire(canonical))
-                    return RedirectResponse(url=cdn_url, status_code=302)
-    except Exception as e:
-        logger.warning(f"[PLAYBACK] ytmusic-stream-server unavailable ({e}), falling back to Soulseek...")
-
-    # 3. Fallback: Soulseek acquisition
+    # 2. Acquire audio via Soulseek daemon (slskd)
+    logger.info(f"[PLAYBACK] Cache miss for '{track.title}'. Acquiring high-fidelity audio from Soulseek...")
     try:
         audio_file = await acquisition_manager.acquire_track_audio(canonical, db)
         return get_audio_file_response(audio_file)
     except FileNotFoundError as e:
+        logger.warning(f"[PLAYBACK] Track not found on Soulseek network for '{canonical.title}': {e}")
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"[PLAYBACK] Failed acquisition for '{canonical.title}': {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to acquire recording: {str(e)}")
+        logger.error(f"[PLAYBACK] Failed Soulseek acquisition for '{canonical.title}': {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to acquire recording from Soulseek: {str(e)}")
 
 
 @app.get("/stream")

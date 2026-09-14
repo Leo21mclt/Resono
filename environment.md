@@ -23,12 +23,12 @@
 ## 2. Existing Workloads & Side-by-Side Isolation
 
 The home server currently runs:
-- **Jellyfin Server:** Main media hub.
-- **Existing JellyMusicDiscovery + ytmusic-stream-server:** Legacy YouTube Music-based discovery and streaming system.
+- **Jellyfin Server:** Main media hub (`8096:8096`).
+- **slskd:** Soulseek daemon (`5030:5030`).
 
 ### Isolation & Rollback Guarantees:
-1. **Zero Disruption to Legacy Setup:** Resono will run in its own Docker network (`resono-net`) and use dedicated data volumes. The legacy `ytmusic-stream-server` and JellyMusicDiscovery will remain completely untouched and active during all Phase 0 through Phase 9 milestones.
-2. **Safe Rollback:** If Resono requires testing on Jellyfin, it can be tested against a dedicated development Jellyfin instance or a dedicated test library before updating the primary Jellyfin music library. Removing the Resono plugin `.dll` immediately restores Jellyfin to its previous state.
+1. **Zero Disruption to Media Server:** Resono runs in its own containerized gateway and uses dedicated persistent data volumes (`resono-data`, `resono-cache`). Existing services (`jellyfin`, `slskd`) remain completely untouched.
+2. **Safe Rollback:** Removing the Resono plugin `.dll` immediately restores Jellyfin to its previous state.
 
 ---
 
