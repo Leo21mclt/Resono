@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
@@ -49,14 +49,44 @@
                     </div>
 
                     <div class="resono-card">
+                        <h2>Playback Engine & Streaming Sources</h2>
+                        <p>Configure audio acquisition priority and direct streaming credentials.</p>
+
+                        <div class="selectContainer">
+                            <label class="selectLabel" for="primaryPlaybackSource">Primary Playback Source</label>
+                            <select id="primaryPlaybackSource" name="primaryPlaybackSource" is="emby-select" class="emby-select-withcolor emby-select">
+                                <option value="deezer">Deezer Direct Stream (Instant &lt; 1s, 320 kbps) - Recommended</option>
+                                <option value="soulseek">Soulseek P2P Network (Decentralized FLAC/MP3)</option>
+                            </select>
+                            <div class="fieldDescription">Source consulted first when playing new tracks.</div>
+                        </div>
+
+                        <div class="selectContainer" style="margin-top: 15px;">
+                            <label class="selectLabel" for="fallbackPlaybackSource">Secondary / Fallback Source</label>
+                            <select id="fallbackPlaybackSource" name="fallbackPlaybackSource" is="emby-select" class="emby-select-withcolor emby-select">
+                                <option value="soulseek">Soulseek P2P Network (Recommended Fallback)</option>
+                                <option value="deezer">Deezer Direct Stream</option>
+                                <option value="none">Disabled (No Fallback)</option>
+                            </select>
+                            <div class="fieldDescription">Used automatically if the primary source fails or does not have the track.</div>
+                        </div>
+
+                        <div class="inputContainer" style="margin-top: 15px;">
+                            <label class="inputLabel inputLabelUnfocused" for="deezerArl">Deezer ARL Token</label>
+                            <input id="deezerArl" name="deezerArl" type="password" is="emby-input" class="emby-input" placeholder="Paste your 192-character Deezer ARL cookie here" />
+                            <div class="fieldDescription">Enables instant 320 kbps / FLAC CDN direct playback with 0 ads. Obtain in 10s: Log in at deezer.com &gt; F12 (DevTools) &gt; Storage / Application &gt; Cookies &gt; copy 'arl' value.</div>
+                        </div>
+                    </div>
+
+                    <div class="resono-card">
                         <h2>Catalog Metadata Providers</h2>
                         <p>Choose where Resono searches for track metadata, albums, and high-resolution cover arts.</p>
 
                         <div class="selectContainer">
                             <label class="selectLabel" for="catalogProvider">Primary Catalog Provider</label>
                             <select id="catalogProvider" name="catalogProvider" is="emby-select" class="emby-select-withcolor emby-select">
-                                <option value="apple">Apple Music (iTunes API) - Recommended</option>
-                                <option value="deezer">Deezer API - Fast</option>
+                                <option value="deezer">Deezer API - Recommended (1:1 Catalog &amp; HD Portraits)</option>
+                                <option value="apple">Apple Music (iTunes API) - Fast</option>
                                 <option value="musicbrainz">MusicBrainz - Open Archive</option>
                                 <option value="spotify">Spotify (SpotAPI) - Headless</option>
                             </select>
@@ -68,8 +98,8 @@
                         <div class="selectContainer" style="margin-top: 20px;">
                             <label class="selectLabel" for="fallbackCatalogProvider">Secondary / Fallback Provider</label>
                             <select id="fallbackCatalogProvider" name="fallbackCatalogProvider" is="emby-select" class="emby-select-withcolor emby-select">
-                                <option value="deezer">Deezer API (Recommended Fallback)</option>
-                                <option value="apple">Apple Music (iTunes API)</option>
+                                <option value="apple">Apple Music (iTunes API) - Recommended Fallback</option>
+                                <option value="deezer">Deezer API</option>
                                 <option value="spotify">Spotify (SpotAPI)</option>
                                 <option value="musicbrainz">MusicBrainz</option>
                                 <option value="none">Disabled (No Fallback)</option>
@@ -173,15 +203,18 @@
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(ResonoConfig.pluginUniqueId).then(function (config) {
                     document.querySelector('#gatewayUrl').value = config.GatewayUrl || 'http://localhost:8080';
-                    document.querySelector('#catalogProvider').value = config.CatalogProvider || 'apple';
-                    document.querySelector('#fallbackCatalogProvider').value = config.FallbackCatalogProvider || 'deezer';
+                    document.querySelector('#primaryPlaybackSource').value = config.PrimaryPlaybackSource || 'deezer';
+                    document.querySelector('#fallbackPlaybackSource').value = config.FallbackPlaybackSource || 'soulseek';
+                    document.querySelector('#deezerArl').value = config.DeezerArl || '';
+                    document.querySelector('#catalogProvider').value = config.CatalogProvider || 'deezer';
+                    document.querySelector('#fallbackCatalogProvider').value = config.FallbackCatalogProvider || 'apple';
                     document.querySelector('#enableVirtualPlaylists').checked = config.EnableVirtualPlaylists !== false;
                     document.querySelector('#chartCountryCode').value = config.ChartCountryCode || 'PE';
                     document.querySelector('#enableSyncedLyrics').checked = config.EnableSyncedLyrics !== false;
                     document.querySelector('#searchLimit').value = config.SearchLimit || 20;
                     document.querySelector('#enableSearchCache').checked = config.EnableSearchCache !== false;
                     document.querySelector('#enableDirectPlay').checked = config.EnableDirectPlay !== false;
-                    updateProviderText(config.CatalogProvider || 'apple');
+                    updateProviderText(config.CatalogProvider || 'deezer');
                     Dashboard.hideLoadingMsg();
                 });
             });
@@ -191,6 +224,9 @@
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(ResonoConfig.pluginUniqueId).then(function (config) {
                     config.GatewayUrl = document.querySelector('#gatewayUrl').value;
+                    config.PrimaryPlaybackSource = document.querySelector('#primaryPlaybackSource').value;
+                    config.FallbackPlaybackSource = document.querySelector('#fallbackPlaybackSource').value;
+                    config.DeezerArl = document.querySelector('#deezerArl').value;
                     config.CatalogProvider = document.querySelector('#catalogProvider').value;
                     config.FallbackCatalogProvider = document.querySelector('#fallbackCatalogProvider').value;
                     config.EnableVirtualPlaylists = document.querySelector('#enableVirtualPlaylists').checked;

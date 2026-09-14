@@ -17,6 +17,7 @@ from app.core.jobs import job_manager
 from app.core.validate import validate_audio_file
 from app.matcher.scoring import matcher
 from app.db.models import SourceMapping, DownloadJob
+from app.core.deezer_stream import deezer_streamer
 
 logger = logging.getLogger("resono.acquire")
 
@@ -80,8 +81,53 @@ class AcquisitionManager:
 
         return await job_manager.get_or_create(track.canonical_id, _do_acquire)
 
+    async def _try_deezer(self, track: CanonicalTrack) -> Path | None:
+        """Attempt instant CDN download and Blowfish decryption from Deezer."""
+        dz_id = None
+        if track.spotify_id and track.spotify_id.startswith("deezer:track:"):
+            dz_id = track.spotify_id.split(":")[-1]
+        elif track.spotify_id and track.spotify_id.isdigit():
+            dz_id = track.spotify_id
+        else:
+            try:
+                from app.catalog.manager import catalog_manager
+                dz_prov = catalog_manager.providers.get("deezer")
+                if dz_prov:
+                    q = f"{track.artist_name} {track.title}".strip()
+                    dz_res = await dz_prov.search(q, limit=1)
+                    if dz_res.tracks:
+                        dz_id = dz_res.tracks[0].id.split(":")[-1]
+            except Exception as e:
+                logger.debug(f"[DEEZER-ARL] Deezer search resolution error: {e}")
+
+        if not dz_id:
+            logger.debug(f"[DEEZER-ARL] No Deezer track ID found for '{track.title}'")
+            return None
+
+        target_path = cache_manager.get_audio_path(track.canonical_id)
+        logger.info(f"[DEEZER-ARL] Attempting instant CDN download for Deezer track {dz_id}...")
+        ok = await deezer_streamer.download_track(dz_id, target_path)
+        if ok and target_path.exists():
+            logger.info(f"[DEEZER-ARL] Successfully acquired and decrypted '{track.title}' from Deezer CDN!")
+            return target_path
+        return None
+
     async def _run_acquisition_pipeline(self, track: CanonicalTrack, db: AsyncSession) -> Path:
         logger.info(f"[ACQUIRE] Starting acquisition for '{track.title}' by '{track.artist_name}' ({track.canonical_id})")
+
+        primary_source = getattr(settings, "PRIMARY_PLAYBACK_SOURCE", "deezer").lower().strip()
+        fallback_source = getattr(settings, "FALLBACK_PLAYBACK_SOURCE", "soulseek").lower().strip()
+
+        # -------------------------------------------------------------
+        # STEP 0: Deezer CDN Fast-Path (if primary playback source)
+        # -------------------------------------------------------------
+        if primary_source == "deezer":
+            dz_path = await self._try_deezer(track)
+            if dz_path:
+                return dz_path
+            if fallback_source == "none":
+                raise FileNotFoundError(f"Failed to acquire recording from Deezer for '{track.title}'")
+            logger.info(f"[ACQUIRE] Deezer CDN stream unavailable or failed; falling back to Soulseek P2P for '{track.title}'...")
 
         # -------------------------------------------------------------
         # STEP 1: Fast-Path Check for Known-Good Source Mapping
@@ -175,6 +221,13 @@ class AcquisitionManager:
             else:
                 blacklist_peer(candidate.peer_id, duration_sec=600.0)
                 logger.warning(f"[ACQUIRE] Candidate #{match_idx} from peer {candidate.peer_id} failed or stalled. Trying next candidate...")
+
+        # If primary was Soulseek and fallback is Deezer, attempt Deezer CDN now
+        if primary_source == "soulseek" and fallback_source == "deezer":
+            logger.info(f"[ACQUIRE] Soulseek candidates exhausted for '{track.title}'; falling back to Deezer CDN...")
+            dz_path = await self._try_deezer(track)
+            if dz_path:
+                return dz_path
 
         raise FileNotFoundError(f"Failed to acquire recording for '{track.title}' after trying available candidates.")
 

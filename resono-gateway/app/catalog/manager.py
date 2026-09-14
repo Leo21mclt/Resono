@@ -44,8 +44,8 @@ class CatalogManager:
         clean = (name or "").lower().strip()
         if clean in self.providers:
             return self.providers[clean]
-        default_name = getattr(settings, "CATALOG_PROVIDER", "apple").lower().strip()
-        return self.providers.get(default_name, self.providers["apple"])
+        default_name = getattr(settings, "CATALOG_PROVIDER", "deezer").lower().strip()
+        return self.providers.get(default_name, self.providers["deezer"])
 
     async def search(
         self,
@@ -58,8 +58,8 @@ class CatalogManager:
         if not clean_query:
             return CatalogSearchResult()
 
-        prim_name = provider or getattr(settings, "CATALOG_PROVIDER", "apple")
-        fall_name = fallback or getattr(settings, "FALLBACK_CATALOG_PROVIDER", "deezer")
+        prim_name = provider or getattr(settings, "CATALOG_PROVIDER", "deezer")
+        fall_name = fallback or getattr(settings, "FALLBACK_CATALOG_PROVIDER", "apple")
         cache_key = f"{prim_name}:{fall_name}:{limit}:{clean_query.lower()}"
 
         # 1. Check in-memory search cache

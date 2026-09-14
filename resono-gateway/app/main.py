@@ -37,11 +37,20 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down Resono Gateway...")
 
+from app.core.deezer_stream import deezer_streamer
+
 app = FastAPI(
     title=settings.APP_NAME,
     version="0.1.0",
     lifespan=lifespan
 )
+
+@app.middleware("http")
+async def resono_headers_middleware(request: Request, call_next):
+    arl_hdr = request.headers.get("x-deezer-arl")
+    if arl_hdr and arl_hdr.strip():
+        deezer_streamer.update_arl(arl_hdr.strip())
+    return await call_next(request)
 
 @app.get("/health")
 async def health():

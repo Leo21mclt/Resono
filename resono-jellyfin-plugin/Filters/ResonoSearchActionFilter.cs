@@ -153,8 +153,8 @@ namespace Resono.Plugin.Filters
 
             var cfg = Plugin.Instance!.Configuration;
             var gatewayUrl = GetEffectiveGatewayUrl(cfg.GatewayUrl);
-            var provider = !string.IsNullOrWhiteSpace(cfg.CatalogProvider) ? cfg.CatalogProvider : "apple";
-            var fallback = !string.IsNullOrWhiteSpace(cfg.FallbackCatalogProvider) ? cfg.FallbackCatalogProvider : "deezer";
+            var provider = !string.IsNullOrWhiteSpace(cfg.CatalogProvider) ? cfg.CatalogProvider : "deezer";
+            var fallback = !string.IsNullOrWhiteSpace(cfg.FallbackCatalogProvider) ? cfg.FallbackCatalogProvider : "apple";
             var limit = cfg.SearchLimit > 0 ? cfg.SearchLimit : 20;
 
             GatewaySearchResponse? searchData = null;
@@ -166,7 +166,7 @@ namespace Resono.Plugin.Filters
             }
             else
             {
-                var lazy = _inFlightSearches.GetOrAdd(cacheKey, key => new Lazy<Task<GatewaySearchResponse?>>(() => FetchGatewaySearchAsync(gatewayUrl, term, limit, provider, fallback, cfg.EnableSearchCache, ct)));
+                var lazy = _inFlightSearches.GetOrAdd(cacheKey, key => new Lazy<Task<GatewaySearchResponse?>>(() => FetchGatewaySearchAsync(gatewayUrl, term, limit, provider, fallback, cfg.EnableSearchCache, cfg.DeezerArl, ct)));
                 try
                 {
                     searchData = await lazy.Value.ConfigureAwait(false);
@@ -179,10 +179,11 @@ namespace Resono.Plugin.Filters
 
             if (searchData is null) return;
 
+            var requestedTypes = ExtractIncludeItemTypes(ctx.HttpContext);
             switch (or.Value)
             {
                 case QueryResult<BaseItemDto> qr:
-                    AugmentItems(qr, searchData, gatewayUrl);
+                    AugmentItems(qr, searchData, gatewayUrl, requestedTypes);
                     break;
                 case SearchHintResult sr:
                     or.Value = AugmentHints(sr, searchData, gatewayUrl);
@@ -190,12 +191,17 @@ namespace Resono.Plugin.Filters
             }
         }
 
-        private async Task<GatewaySearchResponse?> FetchGatewaySearchAsync(string gatewayUrl, string term, int limit, string provider, string fallback, bool enableCache, CancellationToken ct)
+        private async Task<GatewaySearchResponse?> FetchGatewaySearchAsync(string gatewayUrl, string term, int limit, string provider, string fallback, bool enableCache, string? deezerArl, CancellationToken ct)
         {
             try
             {
                 var url = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(term)}&limit={limit}&provider={Uri.EscapeDataString(provider)}&fallback={Uri.EscapeDataString(fallback)}";
                 var client = _httpClientFactory.CreateClient();
+                if (!string.IsNullOrWhiteSpace(deezerArl))
+                {
+                    client.DefaultRequestHeaders.Remove("X-Deezer-Arl");
+                    client.DefaultRequestHeaders.Add("X-Deezer-Arl", deezerArl.Trim());
+                }
                 var data = await client.GetFromJsonAsync<GatewaySearchResponse>(url, ct).ConfigureAwait(false);
                 if (data != null && enableCache)
                 {
@@ -211,13 +217,18 @@ namespace Resono.Plugin.Filters
             }
         }
 
-        private void AugmentItems(QueryResult<BaseItemDto> qr, GatewaySearchResponse data, string gatewayUrl)
+        private void AugmentItems(QueryResult<BaseItemDto> qr, GatewaySearchResponse data, string gatewayUrl, HashSet<string>? requestedTypes = null)
         {
             var existingIds = qr.Items.Select(i => i.Id).ToHashSet();
             var additions = new List<BaseItemDto>();
 
+            bool hasTypeFilter = requestedTypes != null && requestedTypes.Count > 0;
+            bool wantArtists = !hasTypeFilter || requestedTypes!.Contains("MusicArtist") || requestedTypes!.Contains("Artist");
+            bool wantAlbums = !hasTypeFilter || requestedTypes!.Contains("MusicAlbum");
+            bool wantTracks = !hasTypeFilter || requestedTypes!.Contains("Audio");
+
             // 1. Add Artists
-            if (data.Artists != null)
+            if (wantArtists && data.Artists != null)
             {
                 foreach (var a in data.Artists)
                 {
@@ -238,7 +249,7 @@ namespace Resono.Plugin.Filters
             }
 
             // 2. Add Albums
-            if (data.Albums != null)
+            if (wantAlbums && data.Albums != null)
             {
                 foreach (var al in data.Albums)
                 {
@@ -278,7 +289,7 @@ namespace Resono.Plugin.Filters
             }
 
             // 3. Add Tracks
-            if (data.Tracks != null)
+            if (wantTracks && data.Tracks != null)
             {
                 foreach (var t in data.Tracks)
                 {

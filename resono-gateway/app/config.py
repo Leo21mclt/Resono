@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     SPOTIFY_CLIENT_ID: str | None = None
     SPOTIFY_CLIENT_SECRET: str | None = None
 
+    # Playback Acquisition settings
+    PRIMARY_PLAYBACK_SOURCE: str = "deezer"  # "deezer" | "soulseek"
+    FALLBACK_PLAYBACK_SOURCE: str = "soulseek"  # "soulseek" | "deezer" | "none"
+    DEEZER_ARL: str | None = None
+
     # Storage paths
     DATA_DIR: Path = Path("./data")
     CACHE_DIR: Path = Path("./cache/audio")
