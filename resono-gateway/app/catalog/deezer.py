@@ -77,8 +77,8 @@ class DeezerProvider(CatalogProvider):
                         album_title=album_title,
                         album_id=f"deezer:album:{album_id}",
                         duration_ms=duration_sec * 1000,
-                        disc_number=1,
-                        track_number=1,
+                        disc_number=it.get("disk_number") or 1,
+                        track_number=it.get("track_position") or 1,
                         isrc=it.get("isrc"),
                         artwork_url=cover_art,
                         explicit=bool(it.get("explicit_lyrics", False))
@@ -307,7 +307,7 @@ class DeezerProvider(CatalogProvider):
 
             tracks_data = data.get("tracks", {}).get("data", [])
             tracks: list[CatalogTrack] = []
-            for t in tracks_data:
+            for idx, t in enumerate(tracks_data, 1):
                 tracks.append(CatalogTrack(
                     id=f"deezer:track:{t.get('id')}",
                     title=t.get("title", ""),
@@ -316,8 +316,8 @@ class DeezerProvider(CatalogProvider):
                     album_title=album.title,
                     album_id=album.id,
                     duration_ms=t.get("duration", 0) * 1000,
-                    disc_number=t.get("disk_number", 1),
-                    track_number=t.get("track_position", 1),
+                    disc_number=t.get("disk_number") or 1,
+                    track_number=t.get("track_position") or idx,
                     isrc=t.get("isrc"),
                     artwork_url=cover,
                     explicit=bool(t.get("explicit_lyrics", False))

@@ -53,7 +53,7 @@ namespace Resono.Plugin.Filters
 
         private static readonly HashSet<string> MusicTypes = new(StringComparer.OrdinalIgnoreCase)
         {
-            "Audio", "MusicAlbum", "MusicArtist", "AudioBook",
+            "Audio", "MusicAlbum", "MusicArtist", "AudioBook", "Album", "Artist", "AlbumArtist", "Playlist", "Song"
         };
 
         private readonly IHttpClientFactory _httpClientFactory;
@@ -126,9 +126,10 @@ namespace Resono.Plugin.Filters
         private static string? ExtractSearchTerm(HttpContext http)
         {
             var q = http.Request.Query;
-            if (q.TryGetValue("searchTerm", out var st) && !string.IsNullOrWhiteSpace(st)) return st.ToString();
-            if (q.TryGetValue("SearchTerm", out var st2) && !string.IsNullOrWhiteSpace(st2)) return st2.ToString();
-            if (q.TryGetValue("nameStartsWithOrGreater", out var sw) && !string.IsNullOrWhiteSpace(sw)) return sw.ToString();
+            foreach (var key in new[] { "searchTerm", "SearchTerm", "nameStartsWithOrGreater", "nameStartsWith", "NameStartsWith", "search", "Search", "q", "Q" })
+            {
+                if (q.TryGetValue(key, out var st) && !string.IsNullOrWhiteSpace(st)) return st.ToString();
+            }
             return null;
         }
 

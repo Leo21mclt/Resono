@@ -74,8 +74,12 @@ namespace Resono.Plugin.Filters
                     {
                         if (!string.IsNullOrEmpty(entry.ImageUrl))
                         {
-                            ctx.Result = new RedirectResult(entry.ImageUrl);
-                            return;
+                            var imgRes = await ProxyImageAsync(entry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
+                            if (imgRes != null)
+                            {
+                                ctx.Result = imgRes;
+                                return;
+                            }
                         }
 
                         // Dynamic artwork resolution for artists with missing image URL
@@ -92,8 +96,12 @@ namespace Resono.Plugin.Filters
                                 {
                                     entry.ImageUrl = art.ImageUrl;
                                     _cache.Set(itemId, entry);
-                                    ctx.Result = new RedirectResult(entry.ImageUrl);
-                                    return;
+                                    var imgRes = await ProxyImageAsync(entry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
+                                    if (imgRes != null)
+                                    {
+                                        ctx.Result = imgRes;
+                                        return;
+                                    }
                                 }
                             }
                             catch (Exception ex)
@@ -110,6 +118,27 @@ namespace Resono.Plugin.Filters
             }
 
             await next().ConfigureAwait(false);
+        }
+
+        private async Task<IActionResult?> ProxyImageAsync(string imageUrl, Microsoft.AspNetCore.Http.HttpContext httpContext)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient();
+                var resp = await client.GetAsync(imageUrl, HttpCompletionOption.ResponseHeadersRead, httpContext.RequestAborted).ConfigureAwait(false);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var contentType = resp.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
+                    var stream = await resp.Content.ReadAsStreamAsync(httpContext.RequestAborted).ConfigureAwait(false);
+                    httpContext.Response.Headers["Cache-Control"] = "public, max-age=604800, immutable";
+                    return new FileStreamResult(stream, contentType);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Direct image streaming failed for {Url}: {Message}", imageUrl, ex.Message);
+            }
+            return new RedirectResult(imageUrl);
         }
     }
 }
