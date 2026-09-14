@@ -25,15 +25,24 @@ namespace Resono.Plugin.Filters
     {
         private readonly ResonoItemCache _cache;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly ResonoLibraryRegistrar _registrar;
+        private readonly MediaBrowser.Controller.Library.ILibraryManager _libraryManager;
+        private readonly MediaBrowser.Controller.Session.ISessionManager _sessionManager;
         private readonly ILogger<ResonoItemDetailActionFilter> _logger;
 
         public ResonoItemDetailActionFilter(
             ResonoItemCache cache,
             IHttpClientFactory httpClientFactory,
+            ResonoLibraryRegistrar registrar,
+            MediaBrowser.Controller.Library.ILibraryManager libraryManager,
+            MediaBrowser.Controller.Session.ISessionManager sessionManager,
             ILogger<ResonoItemDetailActionFilter> logger)
         {
             _cache = cache;
             _httpClientFactory = httpClientFactory;
+            _registrar = registrar;
+            _libraryManager = libraryManager;
+            _sessionManager = sessionManager;
             _logger = logger;
         }
 
@@ -57,131 +66,75 @@ namespace Resono.Plugin.Filters
                 }
             }
 
-            // 0.1 Audio Stream Proxy (/Audio/{id}/...)
-            if (path.StartsWith("/Audio/", StringComparison.OrdinalIgnoreCase))
+            // 0.1 Audio Stream Proxy (/Audio/{id}/..., /Items/{id}/File, /Items/{id}/Download)
+            if (IsAudioStreamRoute(ctx, out var streamItemId))
             {
-                if (TryExtractGuidFromPath(path, out var streamItemId))
+                _cache.TryGet(streamItemId, out var streamEntry);
+
+                var cfg = Plugin.Instance?.Configuration;
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
+
+                // If not found in memory cache, attempt metadata lookup from Gateway
+                if (streamEntry == null)
                 {
-                    _cache.TryGet(streamItemId, out var streamEntry);
-
-                    var cfg = Plugin.Instance?.Configuration;
-                    var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
-
-                    // If not found in memory cache, attempt metadata lookup from Gateway
-                    if (streamEntry == null)
-                    {
-                        try
-                        {
-                            var metaClient = _httpClientFactory.CreateClient();
-                            var trackInfo = await metaClient.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{streamItemId:N}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
-                            if (trackInfo != null)
-                            {
-                                streamEntry = new ResonoItemCache.Entry
-                                {
-                                    Kind = "track",
-                                    Name = trackInfo.Name,
-                                    ArtistName = trackInfo.ArtistName,
-                                    AlbumName = trackInfo.AlbumName,
-                                    SpotifyId = trackInfo.Id,
-                                    CanonicalId = trackInfo.CanonicalId,
-                                    ImageUrl = trackInfo.ImageUrl,
-                                    DurationMs = trackInfo.DurationMs,
-                                    TrackNumber = trackInfo.TrackNumber,
-                                    DiscNumber = trackInfo.DiscNumber,
-                                    StreamUrl = !string.IsNullOrEmpty(trackInfo.StreamUrl) ? $"{gatewayUrl}{trackInfo.StreamUrl}" : $"{gatewayUrl}/playback/{trackInfo.Id}"
-                                };
-                                _cache.Set(streamItemId, streamEntry);
-                            }
-                        }
-                        catch { }
-                    }
-
-                    var playId = !string.IsNullOrEmpty(streamEntry?.CanonicalId)
-                        ? streamEntry.CanonicalId
-                        : (!string.IsNullOrEmpty(streamEntry?.SpotifyId) ? streamEntry.SpotifyId : streamItemId.ToString("N"));
-                    var targetUrl = !string.IsNullOrEmpty(streamEntry?.StreamUrl) ? streamEntry.StreamUrl : $"{gatewayUrl}/playback/{playId}";
-
                     try
                     {
-                        var client = _httpClientFactory.CreateClient();
-                        var currentUrl = targetUrl;
-                        HttpResponseMessage? forwardResp = null;
-                        bool isHead = HttpMethods.IsHead(req.Method);
-
-                        for (int hop = 0; hop < 5; hop++)
+                        var metaClient = _httpClientFactory.CreateClient();
+                        var trackInfo = await metaClient.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{streamItemId:N}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        if (trackInfo != null)
                         {
-                            var forwardMethod = isHead ? HttpMethod.Head : HttpMethod.Get;
-                            var forwardReq = new HttpRequestMessage(forwardMethod, currentUrl);
-                            if (!string.IsNullOrWhiteSpace(cfg?.DeezerArl))
+                            streamEntry = new ResonoItemCache.Entry
                             {
-                                forwardReq.Headers.TryAddWithoutValidation("X-Deezer-Arl", cfg.DeezerArl.Trim());
-                            }
-                            if (req.Headers.TryGetValue("Range", out var rangeVal))
-                            {
-                                forwardReq.Headers.TryAddWithoutValidation("Range", rangeVal.ToString());
-                            }
-
-                            forwardResp = await client.SendAsync(forwardReq, HttpCompletionOption.ResponseHeadersRead, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
-                            if ((int)forwardResp.StatusCode is 301 or 302 or 303 or 307 or 308 && forwardResp.Headers.Location != null)
-                            {
-                                var nextUri = forwardResp.Headers.Location;
-                                if (!nextUri.IsAbsoluteUri)
-                                {
-                                    nextUri = new Uri(new Uri(currentUrl), nextUri);
-                                }
-                                currentUrl = nextUri.ToString();
-                                forwardResp.Dispose();
-                                forwardResp = null;
-                                continue;
-                            }
-                            break;
-                        }
-
-                        if (forwardResp != null)
-                        {
-                            using (forwardResp)
-                            {
-                                var httpResp = ctx.HttpContext.Response;
-                                httpResp.StatusCode = (int)forwardResp.StatusCode;
-                                httpResp.ContentType = forwardResp.Content.Headers.ContentType?.ToString() ?? "audio/mpeg";
-
-                                if (forwardResp.Headers.Location != null)
-                                {
-                                    httpResp.Headers["Location"] = forwardResp.Headers.Location.ToString();
-                                }
-                                if (forwardResp.Content.Headers.ContentLength.HasValue)
-                                {
-                                    httpResp.ContentLength = forwardResp.Content.Headers.ContentLength.Value;
-                                }
-                                if (forwardResp.Headers.TryGetValues("Accept-Ranges", out var ar))
-                                {
-                                    httpResp.Headers["Accept-Ranges"] = string.Join(",", ar);
-                                }
-                                if (forwardResp.Content.Headers.TryGetValues("Content-Range", out var cr))
-                                {
-                                    httpResp.Headers["Content-Range"] = string.Join(",", cr);
-                                }
-
-                                if (!isHead)
-                                {
-                                    using var srcStream = await forwardResp.Content.ReadAsStreamAsync(ctx.HttpContext.RequestAborted).ConfigureAwait(false);
-                                    await srcStream.CopyToAsync(httpResp.Body, 64 * 1024, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
-                                }
-                            }
-
-                            ctx.Result = new EmptyResult();
-                            return;
+                                Kind = "track",
+                                Name = trackInfo.Name,
+                                ArtistName = trackInfo.ArtistName,
+                                AlbumName = trackInfo.AlbumName,
+                                SpotifyId = trackInfo.Id,
+                                CanonicalId = trackInfo.CanonicalId,
+                                ImageUrl = trackInfo.ImageUrl,
+                                DurationMs = trackInfo.DurationMs,
+                                TrackNumber = trackInfo.TrackNumber,
+                                DiscNumber = trackInfo.DiscNumber,
+                                StreamUrl = !string.IsNullOrEmpty(trackInfo.StreamUrl) ? $"{gatewayUrl}{trackInfo.StreamUrl}" : $"{gatewayUrl}/playback/{trackInfo.Id}"
+                            };
+                            _cache.Set(streamItemId, streamEntry);
                         }
                     }
-                    catch (OperationCanceledException)
+                    catch { }
+                }
+
+                if (streamEntry != null)
+                {
+                    _registrar.RegisterTrack(streamItemId, streamEntry);
+
+                    var rawPath = req.Path.Value ?? string.Empty;
+                    bool isUniversal = rawPath.IndexOf("/universal", StringComparison.OrdinalIgnoreCase) > 0;
+                    bool wantsRedirect = isUniversal &&
+                        req.Query.TryGetValue("EnableRedirection", out var redirVal) &&
+                        string.Equals(redirVal.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+
+                    if (wantsRedirect)
                     {
-                        ctx.Result = new EmptyResult();
+                        var redirTarget = $"/Audio/{streamItemId:N}/main.mp3";
+                        if (req.Query.TryGetValue("ApiKey", out var ak) || req.Query.TryGetValue("api_key", out ak))
+                        {
+                            redirTarget += $"?api_key={Uri.EscapeDataString(ak.ToString())}";
+                        }
+                        _logger.LogInformation("[Resono] /Audio universal redirect: {Id} -> {Target}", streamItemId, redirTarget);
+                        ctx.Result = new RedirectResult(redirTarget, permanent: false);
                         return;
                     }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed to proxy audio stream for item {Id}: {Message}", streamItemId, ex.Message);
-                    }
+
+                    _ = NudgePlaybackStartAsync(streamItemId);
+
+                    var playId = !string.IsNullOrEmpty(streamEntry.CanonicalId)
+                        ? streamEntry.CanonicalId
+                        : (!string.IsNullOrEmpty(streamEntry.SpotifyId) ? streamEntry.SpotifyId : streamItemId.ToString("N"));
+                    var targetUrl = !string.IsNullOrEmpty(streamEntry.StreamUrl) ? streamEntry.StreamUrl : $"{gatewayUrl}/playback/{playId}";
+
+                    await ProxyAudioStreamAsync(ctx.HttpContext, targetUrl, cfg?.DeezerArl).ConfigureAwait(false);
+                    ctx.Result = new EmptyResult();
+                    return;
                 }
             }
 
@@ -558,6 +511,7 @@ namespace Resono.Plugin.Filters
                 {
                     if (_cache.TryGet(itemId, out var entry) && entry != null)
                     {
+                        if (entry.Kind == "track") _registrar.RegisterTrack(itemId, entry);
                         BaseItemDto dto = entry.Kind switch
                         {
                             "artist" => ResonoSearchActionFilter.BuildArtistDto(itemId, entry),
@@ -571,6 +525,159 @@ namespace Resono.Plugin.Filters
             }
 
             await next().ConfigureAwait(false);
+        }
+
+        private static bool IsAudioStreamRoute(ActionExecutingContext ctx, out Guid id)
+        {
+            id = default;
+            var path = ctx.HttpContext.Request.Path.Value ?? string.Empty;
+
+            // 1. /Audio/{id}/... (universal, stream, stream.mp3, main.mp3, etc.)
+            if (path.StartsWith("/Audio/", StringComparison.OrdinalIgnoreCase))
+            {
+                return TryExtractGuidFromPath(path, out id);
+            }
+
+            // 2. /Items/{id}/File or /Items/{id}/Download (used by Finer, Discrete, and native iOS clients)
+            if (path.StartsWith("/Items/", StringComparison.OrdinalIgnoreCase)
+                && (path.EndsWith("/File", StringComparison.OrdinalIgnoreCase)
+                    || path.EndsWith("/Download", StringComparison.OrdinalIgnoreCase)))
+            {
+                return TryExtractGuidFromPath(path, out id);
+            }
+
+            return false;
+        }
+
+        private async Task ProxyAudioStreamAsync(HttpContext httpCtx, string targetUrl, string? deezerArl)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient();
+                client.Timeout = Timeout.InfiniteTimeSpan;
+                var req = httpCtx.Request;
+                bool isHead = HttpMethods.IsHead(req.Method);
+                var currentUrl = targetUrl;
+                HttpResponseMessage? forwardResp = null;
+
+                for (int hop = 0; hop < 5; hop++)
+                {
+                    var forwardReq = new HttpRequestMessage(isHead ? HttpMethod.Head : HttpMethod.Get, currentUrl);
+                    if (!string.IsNullOrWhiteSpace(deezerArl))
+                    {
+                        forwardReq.Headers.TryAddWithoutValidation("X-Deezer-Arl", deezerArl.Trim());
+                    }
+                    if (req.Headers.TryGetValue("Range", out var rangeVal) && !string.IsNullOrWhiteSpace(rangeVal))
+                    {
+                        forwardReq.Headers.TryAddWithoutValidation("Range", rangeVal.ToString());
+                    }
+
+                    forwardResp = await client.SendAsync(forwardReq, HttpCompletionOption.ResponseHeadersRead, httpCtx.RequestAborted).ConfigureAwait(false);
+                    if ((int)forwardResp.StatusCode is 301 or 302 or 303 or 307 or 308 && forwardResp.Headers.Location != null)
+                    {
+                        var nextUri = forwardResp.Headers.Location;
+                        if (!nextUri.IsAbsoluteUri)
+                        {
+                            nextUri = new Uri(new Uri(currentUrl), nextUri);
+                        }
+                        currentUrl = nextUri.ToString();
+                        forwardResp.Dispose();
+                        forwardResp = null;
+                        continue;
+                    }
+                    break;
+                }
+
+                if (forwardResp != null)
+                {
+                    using (forwardResp)
+                    {
+                        var httpResp = httpCtx.Response;
+                        httpResp.StatusCode = (int)forwardResp.StatusCode;
+                        httpResp.ContentType = forwardResp.Content.Headers.ContentType?.ToString() ?? "audio/mpeg";
+
+                        var contentLength = forwardResp.Content.Headers.ContentLength;
+                        if (contentLength.HasValue)
+                        {
+                            httpResp.ContentLength = contentLength.Value;
+                        }
+
+                        if (forwardResp.Headers.Location != null)
+                        {
+                            httpResp.Headers["Location"] = forwardResp.Headers.Location.ToString();
+                        }
+                        if (forwardResp.Headers.TryGetValues("Accept-Ranges", out var ar))
+                        {
+                            httpResp.Headers["Accept-Ranges"] = string.Join(",", ar);
+                        }
+                        else
+                        {
+                            httpResp.Headers["Accept-Ranges"] = "bytes";
+                        }
+                        if (forwardResp.Content.Headers.TryGetValues("Content-Range", out var cr))
+                        {
+                            httpResp.Headers["Content-Range"] = string.Join(",", cr);
+                        }
+
+                        if (!isHead)
+                        {
+                            await using var srcStream = await forwardResp.Content.ReadAsStreamAsync(httpCtx.RequestAborted).ConfigureAwait(false);
+                            if (contentLength.HasValue)
+                            {
+                                await CopyExactlyAsync(srcStream, httpResp.Body, contentLength.Value, httpCtx.RequestAborted).ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                await srcStream.CopyToAsync(httpResp.Body, 64 * 1024, httpCtx.RequestAborted).ConfigureAwait(false);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[Resono] Failed to proxy audio stream: {Message}", ex.Message);
+            }
+        }
+
+        private static async Task CopyExactlyAsync(System.IO.Stream src, System.IO.Stream dst, long length, CancellationToken ct)
+        {
+            const int bufSize = 64 * 1024;
+            var buf = new byte[bufSize];
+            long remaining = length;
+            while (remaining > 0)
+            {
+                var toRead = (int)Math.Min(remaining, bufSize);
+                var read = await src.ReadAsync(buf.AsMemory(0, toRead), ct).ConfigureAwait(false);
+                if (read == 0) break;
+                await dst.WriteAsync(buf.AsMemory(0, read), ct).ConfigureAwait(false);
+                remaining -= read;
+            }
+        }
+
+        private Task NudgePlaybackStartAsync(Guid trackId)
+        {
+            try
+            {
+                foreach (var s in _sessionManager.Sessions)
+                {
+                    var info = new MediaBrowser.Model.Session.PlaybackStartInfo
+                    {
+                        ItemId = trackId,
+                        SessionId = s.Id,
+                        MediaSourceId = trackId.ToString("N"),
+                        CanSeek = true,
+                        IsPaused = false,
+                        IsMuted = false,
+                        PlayMethod = MediaBrowser.Model.Session.PlayMethod.DirectStream,
+                        PositionTicks = 0,
+                    };
+                    _ = _sessionManager.OnPlaybackStart(info);
+                }
+            }
+            catch { }
+            return Task.CompletedTask;
         }
 
         private static bool TryExtractGuidFromPath(string path, out Guid id)
@@ -790,6 +897,7 @@ namespace Resono.Plugin.Filters
                             ArtistId = artistEntry.Id
                         };
                         _cache.Set(trackId, entry);
+                        _registrar.RegisterTrack(trackId, entry);
 
                         if (!string.IsNullOrEmpty(t.Id))
                         {
@@ -827,6 +935,7 @@ namespace Resono.Plugin.Filters
                                 ArtistId = artistEntry.Id
                             };
                             _cache.Set(trackId, entry);
+                            _registrar.RegisterTrack(trackId, entry);
                             list.Add(ResonoSearchActionFilter.BuildTrackDto(trackId, entry));
                         }
                     }
@@ -910,6 +1019,7 @@ namespace Resono.Plugin.Filters
                             StreamUrl = streamUrl
                         };
                         _cache.Set(trackId, entry);
+                        _registrar.RegisterTrack(trackId, entry);
                         list.Add(ResonoSearchActionFilter.BuildTrackDto(trackId, entry));
                     }
                 }
@@ -977,6 +1087,7 @@ namespace Resono.Plugin.Filters
                         ArtistId = albumEntry.ArtistId
                     };
                     _cache.Set(trackId, entry);
+                    _registrar.RegisterTrack(trackId, entry);
 
                     if (!string.IsNullOrEmpty(t.Id))
                     {

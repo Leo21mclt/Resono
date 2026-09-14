@@ -58,15 +58,18 @@ namespace Resono.Plugin.Filters
 
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ResonoItemCache _cache;
+        private readonly ResonoLibraryRegistrar _registrar;
         private readonly ILogger<ResonoSearchActionFilter> _logger;
 
         public ResonoSearchActionFilter(
             IHttpClientFactory httpClientFactory,
             ResonoItemCache cache,
+            ResonoLibraryRegistrar registrar,
             ILogger<ResonoSearchActionFilter> logger)
         {
             _httpClientFactory = httpClientFactory;
             _cache = cache;
+            _registrar = registrar;
             _logger = logger;
         }
 
@@ -345,6 +348,7 @@ namespace Resono.Plugin.Filters
                             ArtistId = artistId
                         };
                         _cache.Set(id, entry);
+                        _registrar.RegisterTrack(id, entry);
                         if (albumId.HasValue && !string.IsNullOrEmpty(t.AlbumName))
                         {
                             _cache.Set(albumId.Value, new ResonoItemCache.Entry
@@ -612,9 +616,10 @@ namespace Resono.Plugin.Filters
             return new MediaSourceInfo
             {
                 Id = idStr,
-                Path = $"/Audio/{idStr}/universal?MediaSourceId={idStr}",
-                Protocol = MediaProtocol.Http,
+                Path = $"/data/music/resono/{idStr}.mp3",
+                Protocol = MediaProtocol.File,
                 IsRemote = false,
+                Type = MediaSourceType.Default,
                 Name = e.Name ?? "Track",
                 Container = "mp3",
                 SupportsTranscoding = true,
@@ -623,6 +628,8 @@ namespace Resono.Plugin.Filters
                 RequiresOpening = false,
                 RequiresClosing = false,
                 RunTimeTicks = e.DurationMs.HasValue ? (long)e.DurationMs.Value * 10000 : null,
+                Bitrate = 320000,
+                DefaultAudioStreamIndex = 0,
                 MediaStreams = new List<MediaBrowser.Model.Entities.MediaStream>
                 {
                     new MediaBrowser.Model.Entities.MediaStream
@@ -633,7 +640,8 @@ namespace Resono.Plugin.Filters
                         IsDefault = true,
                         BitRate = 320000,
                         SampleRate = 44100,
-                        Channels = 2
+                        Channels = 2,
+                        ChannelLayout = "stereo"
                     }
                 },
                 RequiredHttpHeaders = new Dictionary<string, string>()

@@ -15,6 +15,7 @@ namespace Resono.Plugin
 
             services.AddHttpClient();
             services.AddSingleton<ResonoItemCache>();
+            services.AddSingleton<ResonoLibraryRegistrar>();
 
             services.Configure<MvcOptions>(opts =>
             {
