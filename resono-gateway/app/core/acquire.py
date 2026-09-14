@@ -130,9 +130,12 @@ class AcquisitionManager:
         # STEP 0: Deezer CDN Fast-Path (if primary playback source)
         # -------------------------------------------------------------
         if primary_source == "deezer":
-            dz_path = await self._try_deezer(track)
-            if dz_path:
-                return dz_path
+            try:
+                dz_path = await self._try_deezer(track)
+                if dz_path:
+                    return dz_path
+            except Exception as e:
+                logger.error(f"[ACQUIRE] Deezer acquisition error: {e}", exc_info=True)
             if fallback_source == "none":
                 raise FileNotFoundError(f"Failed to acquire recording from Deezer for '{track.title}'")
             logger.info(f"[ACQUIRE] Deezer CDN stream unavailable or failed; falling back to Soulseek P2P for '{track.title}'...")
@@ -233,9 +236,12 @@ class AcquisitionManager:
         # If primary was Soulseek and fallback is Deezer, attempt Deezer CDN now
         if primary_source == "soulseek" and fallback_source == "deezer":
             logger.info(f"[ACQUIRE] Soulseek candidates exhausted for '{track.title}'; falling back to Deezer CDN...")
-            dz_path = await self._try_deezer(track)
-            if dz_path:
-                return dz_path
+            try:
+                dz_path = await self._try_deezer(track)
+                if dz_path:
+                    return dz_path
+            except Exception as e:
+                logger.error(f"[ACQUIRE] Deezer fallback acquisition error: {e}", exc_info=True)
 
         raise FileNotFoundError(f"Failed to acquire recording for '{track.title}' after trying available candidates.")
 

@@ -24,6 +24,10 @@ class CacheManager:
     def get_track_file_path(self, canonical_id: str, codec: str = "mp3") -> Path:
         return self.cache_dir / f"{canonical_id}.{codec}"
 
+    def get_audio_path(self, canonical_id: str, codec: str = "mp3") -> Path:
+        """Alias for get_track_file_path."""
+        return self.cache_dir / f"{canonical_id}.{codec}"
+
     def find_cached_file(self, canonical_id: str) -> Path | None:
         """Check if any audio file for this canonical ID exists in cache."""
         import uuid
