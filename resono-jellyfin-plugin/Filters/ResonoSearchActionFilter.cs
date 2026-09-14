@@ -97,9 +97,18 @@ namespace Resono.Plugin.Filters
             if (cfg is null || !cfg.EnableSearchInjection) return false;
 
             var controller = ctx.RouteData.Values.TryGetValue("controller", out var c) ? c?.ToString() : null;
-            if (!string.Equals(controller, "Items", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(controller, "Search", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(controller, "Artists", StringComparison.OrdinalIgnoreCase))
+            var path = ctx.HttpContext.Request.Path.Value ?? string.Empty;
+
+            bool isSupportedController = string.Equals(controller, "Items", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(controller, "Search", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(controller, "Artists", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(controller, "UserLibrary", StringComparison.OrdinalIgnoreCase);
+
+            bool isSupportedPath = path.IndexOf("/Search", StringComparison.OrdinalIgnoreCase) >= 0
+                || path.IndexOf("/Items", StringComparison.OrdinalIgnoreCase) >= 0
+                || path.IndexOf("/Artists", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            if (!isSupportedController && !isSupportedPath)
                 return false;
 
             term = ExtractSearchTerm(ctx.HttpContext);
@@ -176,7 +185,7 @@ namespace Resono.Plugin.Filters
                     AugmentItems(qr, searchData, gatewayUrl);
                     break;
                 case SearchHintResult sr:
-                    or.Value = AugmentHints(sr, searchData);
+                    or.Value = AugmentHints(sr, searchData, gatewayUrl);
                     break;
             }
         }
@@ -358,17 +367,152 @@ namespace Resono.Plugin.Filters
             }
         }
 
-        private SearchHintResult AugmentHints(SearchHintResult sr, GatewaySearchResponse data)
+        private SearchHintResult AugmentHints(SearchHintResult sr, GatewaySearchResponse data, string gatewayUrl)
         {
             var existingIds = (sr.SearchHints ?? Array.Empty<SearchHint>()).Select(h => h.Id).ToHashSet();
             var additions = new List<SearchHint>();
 
+            // 1. Artists
+            if (data.Artists != null)
+            {
+                foreach (var a in data.Artists)
+                {
+                    var id = ResonoItemCache.DeterministicGuid(a.Id ?? a.Name ?? Guid.NewGuid().ToString());
+                    var entry = new ResonoItemCache.Entry
+                    {
+                        Kind = "artist",
+                        Name = a.Name,
+                        SpotifyId = a.Id,
+                        ImageUrl = a.ImageUrl
+                    };
+                    _cache.Set(id, entry);
+
+                    if (existingIds.Add(id))
+                    {
+                        additions.Add(new SearchHint
+                        {
+                            Id = id,
+                            Name = a.Name,
+                            Type = BaseItemKind.MusicArtist,
+                            PrimaryImageTag = "resono-" + id.ToString("N")
+                        });
+                    }
+                }
+            }
+
+            // 2. Albums
+            if (data.Albums != null)
+            {
+                foreach (var al in data.Albums)
+                {
+                    var id = ResonoItemCache.DeterministicGuid(al.Id ?? al.Name ?? Guid.NewGuid().ToString());
+                    var artistId = !string.IsNullOrEmpty(al.ArtistId)
+                        ? ResonoItemCache.DeterministicGuid(al.ArtistId)
+                        : (!string.IsNullOrEmpty(al.ArtistName) ? ResonoItemCache.DeterministicGuid("artist:" + al.ArtistName) : (Guid?)null);
+
+                    if (artistId.HasValue && !string.IsNullOrEmpty(al.ArtistName))
+                    {
+                        if (!_cache.TryGet(artistId.Value, out _))
+                        {
+                            _cache.Set(artistId.Value, new ResonoItemCache.Entry
+                            {
+                                Kind = "artist",
+                                Name = al.ArtistName,
+                                SpotifyId = al.ArtistId
+                            });
+                        }
+                    }
+
+                    var entry = new ResonoItemCache.Entry
+                    {
+                        Kind = "album",
+                        Name = al.Name,
+                        ArtistName = al.ArtistName,
+                        SpotifyId = al.Id,
+                        ImageUrl = al.ImageUrl,
+                        ArtistId = artistId
+                    };
+                    _cache.Set(id, entry);
+
+                    if (existingIds.Add(id))
+                    {
+                        additions.Add(new SearchHint
+                        {
+                            Id = id,
+                            Name = al.Name,
+                            Type = BaseItemKind.MusicAlbum,
+                            Artists = !string.IsNullOrEmpty(al.ArtistName) ? new[] { al.ArtistName } : Array.Empty<string>(),
+                            AlbumArtist = al.ArtistName,
+                            PrimaryImageTag = "resono-" + id.ToString("N")
+                        });
+                    }
+                }
+            }
+
+            // 3. Tracks
             if (data.Tracks != null)
             {
                 foreach (var t in data.Tracks)
                 {
                     var id = !string.IsNullOrEmpty(t.CanonicalId) && Guid.TryParse(t.CanonicalId, out var g)
                         ? g : ResonoItemCache.DeterministicGuid(t.Id ?? t.Name ?? Guid.NewGuid().ToString());
+
+                    var albumId = !string.IsNullOrEmpty(t.AlbumId)
+                        ? ResonoItemCache.DeterministicGuid(t.AlbumId)
+                        : !string.IsNullOrEmpty(t.AlbumName)
+                            ? ResonoItemCache.DeterministicGuid("album:" + (t.AlbumName + (t.ArtistName ?? "")))
+                            : (Guid?)null;
+
+                    var artistId = !string.IsNullOrEmpty(t.ArtistId)
+                        ? ResonoItemCache.DeterministicGuid(t.ArtistId)
+                        : !string.IsNullOrEmpty(t.ArtistName)
+                            ? ResonoItemCache.DeterministicGuid("artist:" + t.ArtistName)
+                            : (Guid?)null;
+
+                    var streamUrl = !string.IsNullOrEmpty(t.StreamUrl)
+                        ? $"{gatewayUrl}{t.StreamUrl}"
+                        : $"{gatewayUrl}/playback/{t.Id}";
+
+                    var entry = new ResonoItemCache.Entry
+                    {
+                        Kind = "track",
+                        Name = t.Name,
+                        ArtistName = t.ArtistName,
+                        AlbumName = t.AlbumName,
+                        SpotifyId = t.Id,
+                        CanonicalId = t.CanonicalId,
+                        ImageUrl = t.ImageUrl,
+                        DurationMs = t.DurationMs,
+                        TrackNumber = t.TrackNumber,
+                        DiscNumber = t.DiscNumber,
+                        StreamUrl = streamUrl,
+                        AlbumId = albumId,
+                        ArtistId = artistId
+                    };
+                    _cache.Set(id, entry);
+
+                    if (albumId.HasValue && !string.IsNullOrEmpty(t.AlbumName))
+                    {
+                        _cache.Set(albumId.Value, new ResonoItemCache.Entry
+                        {
+                            Kind = "album",
+                            Name = t.AlbumName,
+                            ArtistName = t.ArtistName,
+                            SpotifyId = t.AlbumId,
+                            ImageUrl = t.ImageUrl,
+                            ArtistId = artistId
+                        });
+                    }
+
+                    if (artistId.HasValue && !string.IsNullOrEmpty(t.ArtistName))
+                    {
+                        _cache.Set(artistId.Value, new ResonoItemCache.Entry
+                        {
+                            Kind = "artist",
+                            Name = t.ArtistName,
+                            ImageUrl = t.ImageUrl
+                        });
+                    }
 
                     if (existingIds.Add(id))
                     {

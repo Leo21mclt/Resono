@@ -5,8 +5,8 @@ namespace Resono.Plugin.Configuration
     public class PluginConfiguration : BasePluginConfiguration
     {
         public string GatewayUrl { get; set; } = "http://localhost:8080";
-        public string CatalogProvider { get; set; } = "apple";
-        public string FallbackCatalogProvider { get; set; } = "deezer";
+        public string CatalogProvider { get; set; } = "deezer";
+        public string FallbackCatalogProvider { get; set; } = "apple";
         public bool EnableDirectPlay { get; set; } = true;
         public bool EnableSearchInjection { get; set; } = true;
         public bool EnableSearchCache { get; set; } = true;

@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -113,6 +114,24 @@ class CatalogManager:
                     return res_fall
             except Exception as e:
                 logger.warning(f"Fallback provider ({fallback_prov.name}) error: {e}")
+
+        # 4. If still 0 results and query contains quotes or " by ", sanitize and try again
+        sanitized = re.sub(r'["\']', '', clean_query)
+        if " by " in sanitized.lower():
+            sanitized = re.sub(r'\s+by\s+', ' ', sanitized, flags=re.IGNORECASE).strip()
+        if sanitized != clean_query:
+            try:
+                res_clean = await primary.search(sanitized, limit=limit)
+                if res_clean.tracks or res_clean.albums or res_clean.artists:
+                    self._cache[cache_key] = (now + self._cache_ttl_sec, res_clean)
+                    return res_clean
+                if fallback_prov and fallback_prov != primary:
+                    res_fall2 = await fallback_prov.search(sanitized, limit=limit)
+                    if res_fall2.tracks or res_fall2.albums or res_fall2.artists:
+                        self._cache[cache_key] = (now + self._cache_ttl_sec, res_fall2)
+                        return res_fall2
+            except Exception:
+                pass
 
         return CatalogSearchResult()
 
