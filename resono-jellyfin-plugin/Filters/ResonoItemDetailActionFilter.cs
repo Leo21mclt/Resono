@@ -434,12 +434,17 @@ namespace Resono.Plugin.Filters
                                         if (!string.IsNullOrEmpty(albName) && seenAlbums.Add(albName))
                                         {
                                             var albGuid = t.AlbumId ?? ResonoItemCache.DeterministicGuid("album:" + albName);
+                                            string? albImg = null;
+                                            if (t.ImageTags != null && t.ImageTags.TryGetValue(ImageType.Primary, out var tagStr))
+                                            {
+                                                albImg = tagStr;
+                                            }
                                             var albEntry = new ResonoItemCache.Entry
                                             {
                                                 Kind = "album",
                                                 Name = albName,
                                                 ArtistName = t.AlbumArtist ?? (t.ArtistItems != null && t.ArtistItems.Length > 0 ? t.ArtistItems[0].Name : "Various Artists"),
-                                                ImageUrl = t.ImageTags != null && t.ImageTags.Count > 0 ? t.ImageTags["Primary"] : null
+                                                ImageUrl = albImg
                                             };
                                             _cache.Set(albGuid, albEntry);
                                             albumItems.Add(ResonoSearchActionFilter.BuildAlbumDto(albGuid, albEntry));
@@ -461,11 +466,16 @@ namespace Resono.Plugin.Filters
                                         if (!string.IsNullOrEmpty(artName) && seenArtists.Add(artName))
                                         {
                                             var artGuid = (t.ArtistItems != null && t.ArtistItems.Length > 0) ? t.ArtistItems[0].Id : ResonoItemCache.DeterministicGuid("artist:" + artName);
+                                            string? artImg = null;
+                                            if (t.ImageTags != null && t.ImageTags.TryGetValue(ImageType.Primary, out var tagStr))
+                                            {
+                                                artImg = tagStr;
+                                            }
                                             var artEntry = new ResonoItemCache.Entry
                                             {
                                                 Kind = "artist",
                                                 Name = artName,
-                                                ImageUrl = t.ImageTags != null && t.ImageTags.Count > 0 ? t.ImageTags["Primary"] : null
+                                                ImageUrl = artImg
                                             };
                                             _cache.Set(artGuid, artEntry);
                                             artistItems.Add(ResonoSearchActionFilter.BuildArtistDto(artGuid, artEntry));
