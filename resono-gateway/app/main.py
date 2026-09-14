@@ -314,62 +314,6 @@ async def jellyfin_album_details(album_id: str):
         ]
     }
 
-@app.get("/jellyfin/artist/{artist_id:path}")
-async def jellyfin_artist_details(artist_id: str):
-    """Deliver artist metadata for Jellyfin virtual artist views."""
-    artist = await catalog_manager.get_artist(artist_id)
-    if not artist:
-        raise HTTPException(status_code=404, detail="Artist not found")
-    return {
-        "id": artist.id,
-        "name": artist.name,
-        "imageUrl": artist.artwork_url,
-        "providerIds": extract_provider_ids(artist.id)
-    }
-
-@app.get("/jellyfin/image")
-async def jellyfin_image_proxy(url: str = Query(...)):
-    """
-    Proxy image requests so mobile clients like Discrete, Finamp, Manet
-    receive standard 200 OK responses with caching, avoiding cross-domain 302 drops.
-    """
-    try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            res = await client.get(url, timeout=10.0)
-            if res.status_code == 200:
-                content_type = res.headers.get("content-type", "image/jpeg")
-                return Response(
-                    content=res.content,
-                    media_type=content_type,
-                    headers={"Cache-Control": "public, max-age=31536000, immutable"}
-                )
-    except Exception as e:
-        logger.warning(f"Image proxy failed for '{url}': {e}")
-    raise HTTPException(status_code=404, detail="Image not found")
-
-@app.post("/jellyfin/telemetry/playback")
-async def jellyfin_playback_telemetry(payload: dict[str, Any], db: AsyncSession = Depends(get_db)):
-    """Listen for Jellyfin playback & favorite events to adjust adaptive cache retention score."""
-    canonical_id = payload.get("canonicalId") or payload.get("ItemId")
-    if not canonical_id:
-        return {"status": "ignored", "reason": "no ID provided"}
-
-    is_favorite = payload.get("isFavorite", False)
-    play_count = payload.get("playCount", 1)
-
-    # If entry exists, boost retention
-    res = await db.execute(select(CacheEntry).where(CacheEntry.track_id == canonical_id))
-    entry = res.scalar_one_or_none()
-    if entry:
-        if is_favorite:
-            entry.tier = "PROTECTED"
-            entry.retention_score += 1000.0
-        entry.play_count += play_count
-        await db.commit()
-        return {"status": "updated", "tier": entry.tier, "retention_score": entry.retention_score}
-
-    return {"status": "acknowledged"}
-
 @app.get("/jellyfin/artist/{artist_id:path}/top")
 async def jellyfin_artist_top_tracks(artist_id: str, name: str | None = Query(None), limit: int = Query(10, ge=1, le=50)):
     """Deliver top tracks for an artist."""
@@ -426,6 +370,62 @@ async def jellyfin_artist_similar(artist_id: str, name: str | None = Query(None)
             for a in artists
         ]
     }
+
+@app.get("/jellyfin/artist/{artist_id:path}")
+async def jellyfin_artist_details(artist_id: str):
+    """Deliver artist metadata for Jellyfin virtual artist views."""
+    artist = await catalog_manager.get_artist(artist_id)
+    if not artist:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    return {
+        "id": artist.id,
+        "name": artist.name,
+        "imageUrl": artist.artwork_url,
+        "providerIds": extract_provider_ids(artist.id)
+    }
+
+@app.get("/jellyfin/image")
+async def jellyfin_image_proxy(url: str = Query(...)):
+    """
+    Proxy image requests so mobile clients like Discrete, Finamp, Manet
+    receive standard 200 OK responses with caching, avoiding cross-domain 302 drops.
+    """
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            res = await client.get(url, timeout=10.0)
+            if res.status_code == 200:
+                content_type = res.headers.get("content-type", "image/jpeg")
+                return Response(
+                    content=res.content,
+                    media_type=content_type,
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"}
+                )
+    except Exception as e:
+        logger.warning(f"Image proxy failed for '{url}': {e}")
+    raise HTTPException(status_code=404, detail="Image not found")
+
+@app.post("/jellyfin/telemetry/playback")
+async def jellyfin_playback_telemetry(payload: dict[str, Any], db: AsyncSession = Depends(get_db)):
+    """Listen for Jellyfin playback & favorite events to adjust adaptive cache retention score."""
+    canonical_id = payload.get("canonicalId") or payload.get("ItemId")
+    if not canonical_id:
+        return {"status": "ignored", "reason": "no ID provided"}
+
+    is_favorite = payload.get("isFavorite", False)
+    play_count = payload.get("playCount", 1)
+
+    # If entry exists, boost retention
+    res = await db.execute(select(CacheEntry).where(CacheEntry.track_id == canonical_id))
+    entry = res.scalar_one_or_none()
+    if entry:
+        if is_favorite:
+            entry.tier = "PROTECTED"
+            entry.retention_score += 1000.0
+        entry.play_count += play_count
+        await db.commit()
+        return {"status": "updated", "tier": entry.tier, "retention_score": entry.retention_score}
+
+    return {"status": "acknowledged"}
 
 @app.get("/jellyfin/charts")
 async def jellyfin_get_charts(country: str = Query("PE")):

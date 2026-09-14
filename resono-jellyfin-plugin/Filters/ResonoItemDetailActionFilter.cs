@@ -711,16 +711,32 @@ namespace Resono.Plugin.Filters
 
         private async Task<List<BaseItemDto>?> FetchAlbumTracksAsync(ResonoItemCache.Entry albumEntry, CancellationToken ct)
         {
-            if (string.IsNullOrEmpty(albumEntry.SpotifyId)) return null;
-
             try
             {
                 var cfg = Plugin.Instance!.Configuration;
                 var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
-                var url = $"{gatewayUrl}/jellyfin/album/{Uri.EscapeDataString(albumEntry.SpotifyId)}";
-
                 var client = _httpClientFactory.CreateClient();
-                var albumData = await client.GetFromJsonAsync<GatewayAlbumResponse>(url, ct).ConfigureAwait(false);
+
+                GatewayAlbumResponse? albumData = null;
+                if (!string.IsNullOrEmpty(albumEntry.SpotifyId))
+                {
+                    var url = $"{gatewayUrl}/jellyfin/album/{Uri.EscapeDataString(albumEntry.SpotifyId)}";
+                    albumData = await client.GetFromJsonAsync<GatewayAlbumResponse>(url, ct).ConfigureAwait(false);
+                }
+
+                if (albumData?.Tracks == null && !string.IsNullOrWhiteSpace(albumEntry.Name))
+                {
+                    var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(albumEntry.Name + " " + (albumEntry.ArtistName ?? ""))}&limit=5";
+                    var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, ct).ConfigureAwait(false);
+                    var matchedAlb = searchRes?.Albums?.FirstOrDefault(al => string.Equals(al.Name, albumEntry.Name, StringComparison.OrdinalIgnoreCase)) ?? searchRes?.Albums?.FirstOrDefault();
+                    if (matchedAlb != null && !string.IsNullOrEmpty(matchedAlb.Id))
+                    {
+                        albumEntry.SpotifyId = matchedAlb.Id;
+                        var url = $"{gatewayUrl}/jellyfin/album/{Uri.EscapeDataString(matchedAlb.Id)}";
+                        albumData = await client.GetFromJsonAsync<GatewayAlbumResponse>(url, ct).ConfigureAwait(false);
+                    }
+                }
+
                 if (albumData?.Tracks == null) return null;
 
                 var result = new List<BaseItemDto>();

@@ -310,14 +310,19 @@ namespace Resono.Plugin.Filters
                         _cache.Set(id, entry);
                         if (albumId.HasValue && !string.IsNullOrEmpty(t.AlbumName))
                         {
-                            _cache.Set(albumId.Value, new ResonoItemCache.Entry
+                            if (!_cache.TryGet(albumId.Value, out var existingAlbum) || string.IsNullOrEmpty(existingAlbum?.SpotifyId))
                             {
-                                Kind = "album",
-                                Name = t.AlbumName,
-                                ArtistName = t.ArtistName,
-                                ImageUrl = t.ImageUrl,
-                                ArtistId = artistId
-                            });
+                                var matchedAlb = data.Albums?.FirstOrDefault(al => string.Equals(al.Name, t.AlbumName, StringComparison.OrdinalIgnoreCase));
+                                _cache.Set(albumId.Value, new ResonoItemCache.Entry
+                                {
+                                    Kind = "album",
+                                    Name = t.AlbumName,
+                                    ArtistName = t.ArtistName,
+                                    SpotifyId = t.AlbumId ?? matchedAlb?.Id,
+                                    ImageUrl = t.ImageUrl ?? matchedAlb?.ImageUrl,
+                                    ArtistId = artistId
+                                });
+                            }
                         }
                         if (artistId.HasValue && !string.IsNullOrEmpty(t.ArtistName))
                         {
