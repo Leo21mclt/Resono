@@ -405,11 +405,9 @@ namespace Resono.Plugin.Filters
                             {
                                 var existingIds = qr.Items.Select(i => i.Id).ToHashSet();
                                 var toAdd = charts.Where(c => existingIds.Add(c.Id)).ToArray();
-                                if (toAdd.Length > 0)
-                                {
-                                    qr.Items = qr.Items.Concat(toAdd).ToArray();
-                                    qr.TotalRecordCount = qr.Items.Count;
-                                }
+                                var combined = qr.Items.Concat(toAdd).ToArray();
+                                qr.Items = combined;
+                                qr.TotalRecordCount = combined.Length;
                             }
                         }
                         else if (qr.TotalRecordCount == 0 && isSongsQuery)
@@ -417,8 +415,9 @@ namespace Resono.Plugin.Filters
                             var chartTracks = await FetchChartTracksAsync("global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                             if (chartTracks != null && chartTracks.Count > 0)
                             {
-                                qr.Items = chartTracks.ToArray();
-                                qr.TotalRecordCount = chartTracks.Count;
+                                var songItems = chartTracks.ToArray();
+                                qr.Items = songItems;
+                                qr.TotalRecordCount = songItems.Length;
                             }
                         }
                     }

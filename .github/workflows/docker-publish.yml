@@ -29,7 +29,7 @@ jobs:
 
       - name: Build Resono Jellyfin Plugin
         run: |
-          dotnet build resono-jellyfin-plugin/Resono.Plugin.csproj -c Release -o resono-jellyfin-plugin/dist
+          dotnet build resono-jellyfin-plugin/Resono.Plugin.csproj -c Release -o resono-jellyfin-plugin/dist -v normal
           mkdir -p resono-gateway/plugin
           cp resono-jellyfin-plugin/dist/Resono.Plugin.dll resono-gateway/plugin/Resono.Plugin.dll
 

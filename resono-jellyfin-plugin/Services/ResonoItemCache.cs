@@ -17,6 +17,7 @@ namespace Resono.Plugin.Services
             public string? ArtistName { get; set; }
             public string? AlbumName { get; set; }
             public string? SpotifyId { get; set; }
+            public string? CanonicalId { get; set; }
             public string? ImageUrl { get; set; }
             public int? DurationMs { get; set; }
             public int? TrackNumber { get; set; }
