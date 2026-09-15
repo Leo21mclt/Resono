@@ -497,29 +497,75 @@ async def jellyfin_pin_track(track_id: str, db: AsyncSession = Depends(get_db)):
 
 @app.get("/jellyfin/charts")
 async def jellyfin_get_charts(country: str = Query("PE")):
-    """Return available virtual discovery playlists (Global, country-specific, trending)."""
+    """Return available virtual discovery playlists (Global, country-specific, and live curated Deezer charts)."""
+    charts = [
+        {
+            "id": "global",
+            "name": "Top 50 Global",
+            "description": "The most played tracks in the world right now.",
+            "imageUrl": "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500&h=500&fit=crop"
+        },
+        {
+            "id": country.upper(),
+            "name": f"Top 50 {country.upper()}",
+            "description": f"The hottest tracks trending in {country.upper()} today.",
+            "imageUrl": "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=500&h=500&fit=crop"
+        }
+    ]
+    try:
+        live_pls = await catalog_manager.get_chart_playlists(country="0", limit=8)
+        for pl in live_pls:
+            charts.append(pl)
+    except Exception as e:
+        logger.debug(f"Live chart playlists fetch failed: {e}")
+
+    return {"charts": charts}
+
+@app.get("/jellyfin/charts/albums")
+async def jellyfin_get_chart_albums(country: str = Query("0"), limit: int = Query(30, ge=1, le=50)):
+    """Deliver real top and new albums from Deezer."""
+    albums = await catalog_manager.get_chart_albums(country=country, limit=limit)
     return {
-        "charts": [
+        "albums": [
             {
-                "id": "global",
-                "name": "Top 50 Global",
-                "description": "The most played tracks in the world right now.",
-                "imageUrl": "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500&h=500&fit=crop"
-            },
-            {
-                "id": country.upper(),
-                "name": f"Top 50 {country.upper()}",
-                "description": f"The hottest tracks trending in {country.upper()} today.",
-                "imageUrl": "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=500&h=500&fit=crop"
-            },
-            {
-                "id": "trending",
-                "name": "Trending & Discover",
-                "description": "Weekly trending fresh discoveries.",
-                "imageUrl": "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&h=500&fit=crop"
+                "id": a.id,
+                "name": a.title,
+                "artistName": a.artist_name,
+                "artistId": a.artist_id,
+                "imageUrl": a.artwork_url,
+                "releaseDate": a.release_date,
+                "totalTracks": a.total_tracks
             }
+            for a in albums
         ]
     }
+
+@app.get("/jellyfin/recommendations")
+async def jellyfin_get_recommendations(
+    artists: str = Query("", description="Comma-separated list of seed artist names or IDs"),
+    limit: int = Query(30, ge=1, le=50)
+):
+    """
+    Deliver user-tailored album recommendations without Deezer account contamination.
+    Uses unauthenticated public endpoints based on user's local recently played artists.
+    """
+    seeds = [s.strip() for s in artists.split(",") if s.strip()]
+    albums = await catalog_manager.get_recommendations(seed_artists=seeds, limit=limit)
+    return {
+        "albums": [
+            {
+                "id": a.id,
+                "name": a.title,
+                "artistName": a.artist_name,
+                "artistId": a.artist_id,
+                "imageUrl": a.artwork_url,
+                "releaseDate": a.release_date,
+                "totalTracks": a.total_tracks
+            }
+            for a in albums
+        ]
+    }
+
 
 @app.get("/jellyfin/charts/{chart_id}/tracks")
 async def jellyfin_get_chart_tracks(chart_id: str, limit: int = Query(50, ge=1, le=100)):

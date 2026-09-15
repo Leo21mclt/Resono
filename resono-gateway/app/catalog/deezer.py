@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import logging
 from typing import Any
@@ -26,18 +27,71 @@ class DeezerProvider(CatalogProvider):
         )
 
     async def search(self, query: str, limit: int = 20) -> CatalogSearchResult:
+        clean_q = query.strip()
+        if not clean_q:
+            return CatalogSearchResult()
+
         try:
             async with self._get_client() as client:
-                res = await client.get("/search", params={"q": query, "limit": limit})
-                res.raise_for_status()
-                data = res.json()
-            items = data.get("data", [])
+                async def fetch_endpoint(path: str, p: dict):
+                    try:
+                        r = await client.get(path, params=p)
+                        if r.status_code == 200:
+                            return r.json().get("data", [])
+                    except Exception as e:
+                        logger.debug(f"Deezer search subquery {path} error: {e}")
+                    return []
+
+                # Query tracks, albums, and artists concurrently in parallel
+                track_task = fetch_endpoint("/search", {"q": clean_q, "limit": limit})
+                album_task = fetch_endpoint("/search/album", {"q": clean_q, "limit": limit})
+                artist_task = fetch_endpoint("/search/artist", {"q": clean_q, "limit": limit})
+
+                track_items, album_items, artist_items = await asyncio.gather(
+                    track_task, album_task, artist_task
+                )
 
             tracks: list[CatalogTrack] = []
             albums_map: dict[str, CatalogAlbum] = {}
             artists_map: dict[str, CatalogArtist] = {}
 
-            for it in items:
+            # 1. Process dedicated Artist search results first
+            for it in artist_items:
+                aid = str(it.get("id", ""))
+                aname = it.get("name", "")
+                if aid and aname and aid not in artists_map:
+                    pic = it.get("picture_xl") or it.get("picture_big") or it.get("picture_medium")
+                    artists_map[aid] = CatalogArtist(
+                        id=f"deezer:artist:{aid}",
+                        name=aname,
+                        artwork_url=pic
+                    )
+
+            # 2. Process dedicated Album search results (ensuring matching albums appear prominently)
+            for it in album_items:
+                al_id = str(it.get("id", ""))
+                al_title = it.get("title", "")
+                if al_id and al_title and al_id not in albums_map:
+                    art_data = it.get("artist", {})
+                    art_id = str(art_data.get("id", ""))
+                    art_name = art_data.get("name", "Unknown Artist")
+                    cover = it.get("cover_xl") or it.get("cover_big") or it.get("cover_medium")
+                    if art_id and art_name and art_id not in artists_map:
+                        artists_map[art_id] = CatalogArtist(
+                            id=f"deezer:artist:{art_id}",
+                            name=art_name,
+                            artwork_url=art_data.get("picture_xl") or art_data.get("picture_big")
+                        )
+                    albums_map[al_id] = CatalogAlbum(
+                        id=f"deezer:album:{al_id}",
+                        title=al_title,
+                        artist_name=art_name,
+                        artist_id=f"deezer:artist:{art_id}" if art_id else "",
+                        artwork_url=cover
+                    )
+
+            # 3. Process Track search results
+            for it in track_items:
                 track_id = str(it.get("id", ""))
                 track_title = it.get("title", "")
                 duration_sec = it.get("duration", 0)
@@ -84,13 +138,33 @@ class DeezerProvider(CatalogProvider):
                         explicit=bool(it.get("explicit_lyrics", False))
                     ))
 
+            # Smart ranking: Sort albums so exact / close matches appear at the very top (Deezer Web parity)
+            lower_q = clean_q.lower()
+            sorted_albums = sorted(
+                albums_map.values(),
+                key=lambda a: (
+                    0 if a.title.lower() == lower_q else (
+                        1 if lower_q in a.title.lower() else 2
+                    )
+                )
+            )
+
+            sorted_artists = sorted(
+                artists_map.values(),
+                key=lambda art: (
+                    0 if art.name.lower() == lower_q else (
+                        1 if lower_q in art.name.lower() else 2
+                    )
+                )
+            )
+
             return CatalogSearchResult(
-                artists=list(artists_map.values()),
-                albums=list(albums_map.values()),
+                artists=sorted_artists,
+                albums=sorted_albums,
                 tracks=tracks
             )
         except Exception as e:
-            logger.error(f"Deezer search failed for '{query}': {e}")
+            logger.error(f"Deezer search failed for '{query}': {e}", exc_info=True)
             return CatalogSearchResult()
 
     async def get_artist(self, artist_id: str) -> CatalogArtist | None:
@@ -404,3 +478,65 @@ class DeezerProvider(CatalogProvider):
         except Exception as e:
             logger.error(f"Deezer get_chart_tracks failed for '{chart_type}': {e}")
             return []
+
+    async def get_chart_albums(self, country: str = "0", limit: int = 30) -> list[CatalogAlbum]:
+        """Fetch real top trending and new albums from Deezer."""
+        try:
+            async with self._get_client() as client:
+                cid = country if country.isdigit() else "0"
+                res = await client.get(f"/chart/{cid}/albums", params={"limit": limit})
+                res.raise_for_status()
+                data = res.json()
+            items = data.get("data", [])
+            albums: list[CatalogAlbum] = []
+            for it in items:
+                aid = str(it.get("id", ""))
+                title = it.get("title", "Unknown Album")
+                artist_data = it.get("artist", {})
+                artist_name = artist_data.get("name", "Unknown Artist")
+                artist_id = str(artist_data.get("id", ""))
+                cover = it.get("cover_xl") or it.get("cover_big") or it.get("cover_medium")
+                if aid and title:
+                    albums.append(CatalogAlbum(
+                        id=f"deezer:album:{aid}",
+                        title=title,
+                        artist_name=artist_name,
+                        artist_id=f"deezer:artist:{artist_id}" if artist_id else "",
+                        release_date=it.get("release_date"),
+                        total_tracks=it.get("nb_tracks", 1),
+                        artwork_url=cover
+                    ))
+            return albums
+        except Exception as e:
+            logger.error(f"Deezer get_chart_albums failed for country '{country}': {e}")
+            return []
+
+    async def get_chart_playlists(self, country: str = "0", limit: int = 30) -> list[dict[str, Any]]:
+        """Fetch live rotating curated playlists from Deezer."""
+        try:
+            async with self._get_client() as client:
+                cid = country if country.isdigit() else "0"
+                res = await client.get(f"/chart/{cid}/playlists", params={"limit": limit})
+                res.raise_for_status()
+                data = res.json()
+            items = data.get("data", [])
+            playlists: list[dict[str, Any]] = []
+            for it in items:
+                pid = str(it.get("id", ""))
+                title = it.get("title", "Unknown Playlist")
+                pic = it.get("picture_xl") or it.get("picture_big") or it.get("picture_medium")
+                user_data = it.get("user", {})
+                creator = user_data.get("name", "Deezer")
+                nb_tracks = it.get("nb_tracks", 0)
+                if pid and title:
+                    playlists.append({
+                        "id": pid,
+                        "name": title,
+                        "description": f"Curated by {creator} • {nb_tracks} tracks",
+                        "imageUrl": pic
+                    })
+            return playlists
+        except Exception as e:
+            logger.error(f"Deezer get_chart_playlists failed for country '{country}': {e}")
+            return []
+

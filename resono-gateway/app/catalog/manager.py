@@ -292,6 +292,59 @@ class CatalogManager:
             return await deezer.get_chart_tracks(chart_type=chart_type, limit=limit)
         return []
 
+    async def get_chart_albums(self, country: str = "0", limit: int = 30) -> list[CatalogAlbum]:
+        deezer = self.providers["deezer"]
+        if hasattr(deezer, "get_chart_albums"):
+            return await deezer.get_chart_albums(country=country, limit=limit)
+        return []
+
+    async def get_chart_playlists(self, country: str = "0", limit: int = 30) -> list[dict[str, Any]]:
+        deezer = self.providers["deezer"]
+        if hasattr(deezer, "get_chart_playlists"):
+            return await deezer.get_chart_playlists(country=country, limit=limit)
+        return []
+
+    async def get_recommendations(self, seed_artists: list[str], limit: int = 30) -> list[CatalogAlbum]:
+        """
+        Generate unauthenticated, zero-contamination album recommendations based on seed artist names/IDs.
+        If no seed artists or if fetching yields empty, falls back to live chart albums.
+        """
+        deezer = self.providers["deezer"]
+        recommended_albums: list[CatalogAlbum] = []
+        seen_album_titles: set[str] = set()
+
+        if seed_artists:
+            for artist_str in seed_artists[:4]:
+                try:
+                    if hasattr(deezer, "get_artist_related"):
+                        related = await deezer.get_artist_related(artist_str, limit=5)
+                        for rel in related[:3]:
+                            if hasattr(deezer, "get_artist_albums"):
+                                albs = await deezer.get_artist_albums(rel.id, limit=3)
+                                for a in albs:
+                                    norm = a.title.lower().strip()
+                                    if norm not in seen_album_titles:
+                                        seen_album_titles.add(norm)
+                                        recommended_albums.append(a)
+                                        if len(recommended_albums) >= limit:
+                                            return recommended_albums
+                except Exception as e:
+                    logger.debug(f"Recommendation fetch for {artist_str} error: {e}")
+
+        # If we need more albums to reach limit, fill with live chart albums
+        if len(recommended_albums) < limit:
+            chart_albs = await self.get_chart_albums(limit=limit)
+            for ca in chart_albs:
+                norm = ca.title.lower().strip()
+                if norm not in seen_album_titles:
+                    seen_album_titles.add(norm)
+                    recommended_albums.append(ca)
+                    if len(recommended_albums) >= limit:
+                        break
+
+        return recommended_albums
+
+
     async def get_lyrics(self, artist: str, title: str, album: str | None = None, duration_sec: int | None = None) -> dict | None:
         cache_key = f"lyrics:{artist.lower()}:{title.lower()}"
         if cache_key in self._cache:

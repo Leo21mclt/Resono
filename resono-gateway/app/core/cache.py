@@ -131,10 +131,22 @@ class CacheManager:
         res = await db.execute(select(CacheEntry).where(CacheEntry.tier != "PROTECTED"))
         entries = list(res.scalars().all())
 
-        # Calculate retention scores
+        # Calculate retention scores incorporating plays, inactivity, and size
+        now = datetime.now(timezone.utc)
         scored_entries = []
+        inactivity_threshold = getattr(settings, "CACHE_INACTIVITY_DAYS", 14)
         for e in entries:
-            score = (e.play_count * 10.0) - (e.file_size / (10.0 * 1024 * 1024))
+            last_played = e.last_played_at or now
+            if last_played.tzinfo is None:
+                last_played = last_played.replace(tzinfo=timezone.utc)
+            age_days = max(0.0, (now - last_played).total_seconds() / 86400.0)
+            inactivity_penalty = (
+                (age_days - inactivity_threshold) * 5.0 + (inactivity_threshold * 2.0)
+                if age_days > inactivity_threshold
+                else (age_days * 2.0)
+            )
+            size_mb = e.file_size / (1024.0 * 1024.0)
+            score = (e.play_count * 15.0) - inactivity_penalty - (size_mb * 0.5)
             scored_entries.append((score, e))
 
         scored_entries.sort(key=lambda x: x[0]) # Lowest retention score first

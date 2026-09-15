@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/resono.db"
 
     # Cache limits
-    MAX_CACHE_SIZE_GB: float = 50.0
+    MAX_CACHE_SIZE_GB: float = 15.0
+    CACHE_INACTIVITY_DAYS: int = 14
     MIN_FREE_DISK_GB: float = 10.0
     MAX_CONCURRENT_DOWNLOADS: int = 3
     PREFETCH_BUFFER_TRACKS: int = 2

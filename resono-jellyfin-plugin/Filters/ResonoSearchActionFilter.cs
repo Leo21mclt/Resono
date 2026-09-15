@@ -28,6 +28,7 @@ namespace Resono.Plugin.Filters
         private static readonly ConcurrentDictionary<string, Lazy<Task<GatewaySearchResponse?>>> _inFlightSearches = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, (DateTime Expires, List<GatewayTrack> Tracks)> _chartTracksListCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Charts)> _chartsCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Albums)> _recommendedAlbumsCache = new(StringComparer.OrdinalIgnoreCase);
         private static string? _cachedEffectiveGatewayUrl;
 
         public static string GetEffectiveGatewayUrl(string? configured)
@@ -682,6 +683,23 @@ namespace Resono.Plugin.Filters
             if (cfg is null || !cfg.EnableVirtualPlaylists) return false;
             if (ctx.Result is not ObjectResult { Value: QueryResult<BaseItemDto> qr }) return false;
 
+            var q = ctx.HttpContext.Request.Query;
+            var sortBy = (q.TryGetValue("sortBy", out var sb) ? sb.ToString()
+                : q.TryGetValue("SortBy", out var sb2) ? sb2.ToString() : string.Empty);
+            var filters = (q.TryGetValue("filters", out var f1) ? f1.ToString()
+                : q.TryGetValue("Filters", out var f2) ? f2.ToString() : string.Empty);
+            var isFav = (q.TryGetValue("isFavorite", out var if1) ? if1.ToString()
+                : q.TryGetValue("IsFavorite", out var if2) ? if2.ToString() : string.Empty);
+
+            // Never inject charts into Recent Playlists or Favorite Playlists!
+            if (sortBy.IndexOf("DatePlayed", StringComparison.OrdinalIgnoreCase) >= 0
+                || filters.IndexOf("IsFavorite", StringComparison.OrdinalIgnoreCase) >= 0
+                || filters.IndexOf("RecentlyPlayed", StringComparison.OrdinalIgnoreCase) >= 0
+                || string.Equals(isFav, "true", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
             var path = ctx.HttpContext.Request.Path.Value ?? string.Empty;
             if (path.IndexOf("/UserViews", StringComparison.OrdinalIgnoreCase) >= 0 || path.IndexOf("/Views", StringComparison.OrdinalIgnoreCase) >= 0)
                 return false;
@@ -743,6 +761,23 @@ namespace Resono.Plugin.Filters
             if (ctx.Result is not ObjectResult { Value: QueryResult<BaseItemDto> qr }) return false;
             if (qr.TotalRecordCount > 0) return false;
 
+            var q = ctx.HttpContext.Request.Query;
+            var sortBy = (q.TryGetValue("sortBy", out var sb) ? sb.ToString()
+                : q.TryGetValue("SortBy", out var sb2) ? sb2.ToString() : string.Empty);
+            var filters = (q.TryGetValue("filters", out var f1) ? f1.ToString()
+                : q.TryGetValue("Filters", out var f2) ? f2.ToString() : string.Empty);
+            var isFav = (q.TryGetValue("isFavorite", out var if1) ? if1.ToString()
+                : q.TryGetValue("IsFavorite", out var if2) ? if2.ToString() : string.Empty);
+
+            // Strictly DO NOT inject into Favorite queries or Recently Played queries!
+            if (sortBy.IndexOf("DatePlayed", StringComparison.OrdinalIgnoreCase) >= 0
+                || filters.IndexOf("IsFavorite", StringComparison.OrdinalIgnoreCase) >= 0
+                || filters.IndexOf("RecentlyPlayed", StringComparison.OrdinalIgnoreCase) >= 0
+                || string.Equals(isFav, "true", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
             var path = ctx.HttpContext.Request.Path.Value ?? string.Empty;
             if (path.IndexOf("/UserViews", StringComparison.OrdinalIgnoreCase) >= 0 || path.IndexOf("/Views", StringComparison.OrdinalIgnoreCase) >= 0)
                 return false;
@@ -766,6 +801,25 @@ namespace Resono.Plugin.Filters
             var types = ExtractIncludeItemTypes(ctx.HttpContext);
             bool wantArtists = types.Contains("MusicArtist") || path.StartsWith("/Artists", StringComparison.OrdinalIgnoreCase);
             bool wantAlbums = types.Contains("MusicAlbum");
+
+            Guid userId = Guid.Empty;
+            try
+            {
+                var auth = _authContext.GetAuthorizationInfo(ctx.HttpContext.Request).GetAwaiter().GetResult();
+                if (auth?.UserId != null && auth.UserId != Guid.Empty) userId = auth.UserId;
+            }
+            catch { }
+
+            if (wantAlbums)
+            {
+                var recAlbums = await FetchRecommendedAlbumsAsync(userId, ct).ConfigureAwait(false);
+                if (recAlbums.Count > 0)
+                {
+                    qr.Items = recAlbums.ToArray();
+                    qr.TotalRecordCount = recAlbums.Count;
+                    return;
+                }
+            }
 
             var chartTracks = await FetchChartTrackListAsync("global", ct).ConfigureAwait(false);
             if (chartTracks.Count == 0) return;
@@ -800,38 +854,86 @@ namespace Resono.Plugin.Filters
                     qr.TotalRecordCount = qr.Items.Count;
                 }
             }
-            else if (wantAlbums)
+        }
+
+        public async Task<List<BaseItemDto>> FetchRecommendedAlbumsAsync(Guid userId, CancellationToken ct)
+        {
+            var cfg = Plugin.Instance?.Configuration;
+            if (cfg is null) return new List<BaseItemDto>();
+
+            var seedArtists = new List<string>();
+            if (userId != Guid.Empty)
             {
-                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                var albumDtos = new List<BaseItemDto>();
-                foreach (var t in chartTracks)
+                var userRecent = _recentlyPlayed.GetRecent(userId, 20);
+                var seenArtists = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var p in userRecent)
                 {
-                    if (!string.IsNullOrEmpty(t.AlbumName) && seen.Add(t.AlbumName))
+                    if (_cache.TryGet(p.TrackId, out var tr) && !string.IsNullOrWhiteSpace(tr.ArtistName))
                     {
-                        var albumGuid = ResonoItemCache.StubGuid("dz-album", t.AlbumId ?? t.AlbumName);
-                        var artistGuid = !string.IsNullOrEmpty(t.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", t.ArtistName) : (Guid?)null;
-                        if (!_cache.TryGet(albumGuid, out var albEntry) || albEntry == null)
+                        if (seenArtists.Add(tr.ArtistName))
                         {
-                            albEntry = new ResonoItemCache.Entry
-                            {
-                                Kind = "album",
-                                Name = t.AlbumName,
-                                ArtistName = t.ArtistName,
-                                SpotifyId = t.AlbumId,
-                                ImageUrl = t.ImageUrl,
-                                ArtistId = artistGuid
-                            };
-                            _cache.Set(albumGuid, albEntry);
+                            seedArtists.Add(tr.ArtistName);
+                            if (seedArtists.Count >= 3) break;
                         }
-                        albumDtos.Add(BuildAlbumDto(albumGuid, albEntry));
                     }
                 }
-                if (albumDtos.Count > 0)
+            }
+
+            var cacheKey = seedArtists.Count > 0 ? string.Join("|", seedArtists) : "charts:albums";
+            if (_recommendedAlbumsCache.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow < cached.Expires)
+            {
+                return cached.Albums;
+            }
+
+            var list = new List<BaseItemDto>();
+            try
+            {
+                var gatewayUrl = GetEffectiveGatewayUrl(cfg.GatewayUrl);
+                var client = _httpClientFactory.CreateClient();
+                string url;
+                if (seedArtists.Count > 0)
                 {
-                    qr.Items = albumDtos.ToArray();
-                    qr.TotalRecordCount = qr.Items.Count;
+                    var artistQuery = string.Join(",", seedArtists.Select(Uri.EscapeDataString));
+                    url = $"{gatewayUrl}/jellyfin/recommendations?artists={artistQuery}&limit=30";
+                }
+                else
+                {
+                    url = $"{gatewayUrl}/jellyfin/charts/albums?limit=30";
+                }
+
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                var data = await client.GetFromJsonAsync<GatewayChartAlbumsResponse>(url, timeoutCts.Token).ConfigureAwait(false);
+                if (data?.Albums != null)
+                {
+                    foreach (var a in data.Albums)
+                    {
+                        var albId = ResonoItemCache.StubGuid("dz-album", a.Id ?? a.Name ?? Guid.NewGuid().ToString());
+                        var artId = !string.IsNullOrEmpty(a.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", a.ArtistName) : (Guid?)null;
+                        var entry = new ResonoItemCache.Entry
+                        {
+                            Kind = "album",
+                            Id = albId,
+                            Name = a.Name,
+                            ArtistName = a.ArtistName,
+                            ArtistId = artId,
+                            ImageUrl = a.ImageUrl,
+                            SpotifyId = a.Id
+                        };
+                        _cache.Set(albId, entry);
+                        _registrar.RegisterAlbum(albId, a.Name, a.ArtistName);
+                        list.Add(BuildAlbumDto(albId, entry));
+                    }
+                    if (list.Count > 0)
+                    {
+                        _recommendedAlbumsCache[cacheKey] = (DateTime.UtcNow.AddMinutes(15), list);
+                    }
                 }
             }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to fetch recommended albums: {Message}", ex.Message);
+            }
+            return list;
         }
 
         public async Task<List<GatewayTrack>> FetchChartTrackListAsync(string chartId, CancellationToken ct)

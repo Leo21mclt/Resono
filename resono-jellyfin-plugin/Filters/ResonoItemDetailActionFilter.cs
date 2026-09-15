@@ -38,6 +38,7 @@ namespace Resono.Plugin.Filters
         private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Items)> _artistTopTracksCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<Guid, (DateTime Expires, List<BaseItemDto> Items)> _albumTracksCache = new();
         private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Items)> _chartTracksCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Items)> _recommendedAlbumsCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan MetadataCacheDuration = TimeSpan.FromMinutes(10);
 
         public ResonoItemDetailActionFilter(
@@ -529,21 +530,55 @@ namespace Resono.Plugin.Filters
             // Handle Home / Latest Media queries: GET /Items/Latest or GET /Users/{userId}/Items/Latest
             if (path.IndexOf("/Items/Latest", StringComparison.OrdinalIgnoreCase) >= 0 && ctx.Result is ObjectResult latestOr)
             {
+                var types = ResonoSearchActionFilter.ExtractIncludeItemTypes(ctx.HttpContext);
+                bool wantsAlbums = types.Contains("MusicAlbum");
+
+                Guid userId = Guid.Empty;
+                try
+                {
+                    var auth = _authContext.GetAuthorizationInfo(ctx.HttpContext.Request).GetAwaiter().GetResult();
+                    if (auth?.UserId != null && auth.UserId != Guid.Empty) userId = auth.UserId;
+                }
+                catch { }
+
                 if (latestOr.Value is BaseItemDto[] emptyArray && emptyArray.Length == 0)
                 {
-                    var chartTracks = await FetchChartTracksAsync("global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
-                    if (chartTracks.Count > 0)
+                    if (wantsAlbums)
                     {
-                        latestOr.Value = chartTracks.Take(20).ToArray();
+                        var recAlbums = await FetchRecommendedAlbumsAsync(userId, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        if (recAlbums.Count > 0)
+                        {
+                            latestOr.Value = recAlbums.Take(20).ToArray();
+                        }
+                    }
+                    else
+                    {
+                        var chartTracks = await FetchChartTracksAsync("global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        if (chartTracks.Count > 0)
+                        {
+                            latestOr.Value = chartTracks.Take(20).ToArray();
+                        }
                     }
                 }
                 else if (latestOr.Value is QueryResult<BaseItemDto> emptyQr && emptyQr.TotalRecordCount == 0)
                 {
-                    var chartTracks = await FetchChartTracksAsync("global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
-                    if (chartTracks.Count > 0)
+                    if (wantsAlbums)
                     {
-                        emptyQr.Items = chartTracks.Take(20).ToArray();
-                        emptyQr.TotalRecordCount = emptyQr.Items.Count;
+                        var recAlbums = await FetchRecommendedAlbumsAsync(userId, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        if (recAlbums.Count > 0)
+                        {
+                            emptyQr.Items = recAlbums.Take(20).ToArray();
+                            emptyQr.TotalRecordCount = emptyQr.Items.Count;
+                        }
+                    }
+                    else
+                    {
+                        var chartTracks = await FetchChartTracksAsync("global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        if (chartTracks.Count > 0)
+                        {
+                            emptyQr.Items = chartTracks.Take(20).ToArray();
+                            emptyQr.TotalRecordCount = emptyQr.Items.Count;
+                        }
                     }
                 }
             }
@@ -1149,6 +1184,86 @@ namespace Resono.Plugin.Filters
             return list;
         }
 
+        public async Task<List<BaseItemDto>> FetchRecommendedAlbumsAsync(Guid userId, CancellationToken ct)
+        {
+            var cfg = Plugin.Instance?.Configuration;
+            if (cfg is null) return new List<BaseItemDto>();
+
+            var seedArtists = new List<string>();
+            if (userId != Guid.Empty)
+            {
+                var userRecent = _recentlyPlayed.GetRecent(userId, 20);
+                var seenArtists = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var p in userRecent)
+                {
+                    if (_cache.TryGet(p.TrackId, out var tr) && !string.IsNullOrWhiteSpace(tr.ArtistName))
+                    {
+                        if (seenArtists.Add(tr.ArtistName))
+                        {
+                            seedArtists.Add(tr.ArtistName);
+                            if (seedArtists.Count >= 3) break;
+                        }
+                    }
+                }
+            }
+
+            var cacheKey = seedArtists.Count > 0 ? string.Join("|", seedArtists) : "charts:albums";
+            if (_recommendedAlbumsCache.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow < cached.Expires)
+            {
+                return cached.Items;
+            }
+
+            var list = new List<BaseItemDto>();
+            try
+            {
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
+                var client = _httpClientFactory.CreateClient();
+                string url;
+                if (seedArtists.Count > 0)
+                {
+                    var artistQuery = string.Join(",", seedArtists.Select(Uri.EscapeDataString));
+                    url = $"{gatewayUrl}/jellyfin/recommendations?artists={artistQuery}&limit=30";
+                }
+                else
+                {
+                    url = $"{gatewayUrl}/jellyfin/charts/albums?limit=30";
+                }
+
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                var data = await client.GetFromJsonAsync<GatewayChartAlbumsResponse>(url, timeoutCts.Token).ConfigureAwait(false);
+                if (data?.Albums != null)
+                {
+                    foreach (var a in data.Albums)
+                    {
+                        var albId = ResonoItemCache.StubGuid("dz-album", a.Id ?? a.Name ?? Guid.NewGuid().ToString());
+                        var artId = !string.IsNullOrEmpty(a.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", a.ArtistName) : (Guid?)null;
+                        var entry = new ResonoItemCache.Entry
+                        {
+                            Kind = "album",
+                            Id = albId,
+                            Name = a.Name,
+                            ArtistName = a.ArtistName,
+                            ArtistId = artId,
+                            ImageUrl = a.ImageUrl,
+                            SpotifyId = a.Id
+                        };
+                        _cache.Set(albId, entry);
+                        _registrar.RegisterAlbum(albId, a.Name, a.ArtistName);
+                        list.Add(ResonoSearchActionFilter.BuildAlbumDto(albId, entry));
+                    }
+                    if (list.Count > 0)
+                    {
+                        _recommendedAlbumsCache[cacheKey] = (DateTime.UtcNow.Add(MetadataCacheDuration), list);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to fetch recommended albums: {Message}", ex.Message);
+            }
+            return list;
+        }
+
         private async Task<List<BaseItemDto>?> FetchAlbumTracksAsync(ResonoItemCache.Entry albumEntry, CancellationToken ct)
         {
             if (_albumTracksCache.TryGetValue(albumEntry.Id, out var cached) && DateTime.UtcNow < cached.Expires)
@@ -1449,6 +1564,12 @@ namespace Resono.Plugin.Filters
         public List<GatewayChartItem>? Charts { get; set; }
     }
 
+    public class GatewayChartAlbumsResponse
+    {
+        [JsonPropertyName("albums")]
+        public List<GatewayAlbum>? Albums { get; set; }
+    }
+
     public class GatewayChartItem
     {
         [JsonPropertyName("id")]
@@ -1461,3 +1582,4 @@ namespace Resono.Plugin.Filters
         public string? ImageUrl { get; set; }
     }
 }
+
