@@ -30,26 +30,15 @@ namespace Resono.Plugin.Filters
 
         public static string GetEffectiveGatewayUrl(string? configured)
         {
-            if (!string.IsNullOrEmpty(_cachedEffectiveGatewayUrl)) return _cachedEffectiveGatewayUrl;
+            var env = Environment.GetEnvironmentVariable("RESONO_GATEWAY_URL");
+            if (!string.IsNullOrWhiteSpace(env)) return env.TrimEnd('/');
 
-            var url = configured?.TrimEnd('/') ?? "http://localhost:8080";
-            if (url.Contains("localhost") || url.Contains("127.0.0.1"))
+            if (!string.IsNullOrWhiteSpace(configured) && !configured.Contains("localhost") && !configured.Contains("127.0.0.1"))
             {
-                try
-                {
-                    using var client = new HttpClient { Timeout = TimeSpan.FromMilliseconds(400) };
-                    var res = client.GetAsync("http://resono-gateway:8080/health").GetAwaiter().GetResult();
-                    if (res.IsSuccessStatusCode)
-                    {
-                        _cachedEffectiveGatewayUrl = "http://resono-gateway:8080";
-                        return _cachedEffectiveGatewayUrl;
-                    }
-                }
-                catch { }
+                return configured.TrimEnd('/');
             }
 
-            _cachedEffectiveGatewayUrl = url;
-            return url;
+            return "http://resono-gateway:8080";
         }
 
         private static readonly HashSet<string> MusicTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -62,6 +51,7 @@ namespace Resono.Plugin.Filters
         private readonly ResonoLibraryRegistrar _registrar;
         private readonly ResonoRecentlyPlayedTracker _recentlyPlayed;
         private readonly IAuthorizationContext _authContext;
+        private readonly MediaBrowser.Controller.Library.ILibraryManager _libraryManager;
         private readonly ILogger<ResonoSearchActionFilter> _logger;
 
         public ResonoSearchActionFilter(
@@ -70,6 +60,7 @@ namespace Resono.Plugin.Filters
             ResonoLibraryRegistrar registrar,
             ResonoRecentlyPlayedTracker recentlyPlayed,
             IAuthorizationContext authContext,
+            MediaBrowser.Controller.Library.ILibraryManager libraryManager,
             ILogger<ResonoSearchActionFilter> logger)
         {
             _httpClientFactory = httpClientFactory;
@@ -77,6 +68,7 @@ namespace Resono.Plugin.Filters
             _registrar = registrar;
             _recentlyPlayed = recentlyPlayed;
             _authContext = authContext;
+            _libraryManager = libraryManager;
             _logger = logger;
         }
 
@@ -99,6 +91,12 @@ namespace Resono.Plugin.Filters
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.HttpContext.RequestAborted);
                     cts.CancelAfter(TimeSpan.FromSeconds(4));
                     await TryAugmentPlaylistsAsync(ctx, cts.Token).ConfigureAwait(false);
+                }
+                else if (ShouldAugmentEmptyLibrary(ctx))
+                {
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.HttpContext.RequestAborted);
+                    cts.CancelAfter(TimeSpan.FromSeconds(4));
+                    await TryAugmentEmptyLibraryAsync(ctx, cts.Token).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) { }
@@ -437,6 +435,9 @@ namespace Resono.Plugin.Filters
                             Id = id,
                             Name = a.Name,
                             Type = BaseItemKind.MusicArtist,
+                            MediaType = MediaType.Unknown,
+                            Artists = !string.IsNullOrEmpty(a.Name) ? new[] { a.Name } : Array.Empty<string>(),
+                            AlbumArtist = a.Name,
                             PrimaryImageTag = "resono-" + id.ToString("N")
                         });
                     }
@@ -471,7 +472,10 @@ namespace Resono.Plugin.Filters
                             Id = id,
                             Name = al.Name,
                             Type = BaseItemKind.MusicAlbum,
+                            MediaType = MediaType.Unknown,
+                            Album = al.Name,
                             AlbumArtist = al.ArtistName,
+                            Artists = !string.IsNullOrEmpty(al.ArtistName) ? new[] { al.ArtistName } : Array.Empty<string>(),
                             PrimaryImageTag = "resono-" + id.ToString("N")
                         });
                     }
@@ -510,6 +514,21 @@ namespace Resono.Plugin.Filters
                         }
                     }
 
+                    if (artistId.HasValue && !string.IsNullOrEmpty(t.ArtistName))
+                    {
+                        if (!_cache.TryGet(artistId.Value, out _))
+                        {
+                            _cache.Set(artistId.Value, new ResonoItemCache.Entry
+                            {
+                                Kind = "artist",
+                                Name = t.ArtistName,
+                                SpotifyId = t.ArtistId,
+                                ImageUrl = t.ImageUrl,
+                                Id = artistId.Value
+                            });
+                        }
+                    }
+
                     var entry = new ResonoItemCache.Entry
                     {
                         Kind = "track",
@@ -536,11 +555,12 @@ namespace Resono.Plugin.Filters
                             Id = id,
                             Name = t.Name,
                             Type = BaseItemKind.Audio,
+                            MediaType = MediaType.Audio,
                             Artists = !string.IsNullOrEmpty(t.ArtistName) ? new[] { t.ArtistName } : Array.Empty<string>(),
                             Album = t.AlbumName,
                             AlbumArtist = t.ArtistName,
                             PrimaryImageTag = "resono-" + id.ToString("N"),
-                            RunTimeTicks = (long)t.DurationMs * 10000,
+                            RunTimeTicks = t.DurationMs.HasValue ? (long)t.DurationMs.Value * 10000 : null,
                             IndexNumber = t.TrackNumber,
                         });
                     }
@@ -625,6 +645,20 @@ namespace Resono.Plugin.Filters
             }
         }
 
+        private static bool TryExtractGuidListFromQuery(HttpRequest req, string key, out List<Guid> ids)
+        {
+            ids = new List<Guid>();
+            foreach (var k in new[] { key, char.ToUpperInvariant(key[0]) + key[1..] })
+            {
+                if (req.Query.TryGetValue(k, out var qs))
+                {
+                    foreach (var part in qs.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        if (Guid.TryParse(part, out var g)) ids.Add(g);
+                }
+            }
+            return ids.Count > 0;
+        }
+
         private bool ShouldAugmentPlaylists(ResultExecutingContext ctx)
         {
             var cfg = Plugin.Instance?.Configuration;
@@ -639,10 +673,31 @@ namespace Resono.Plugin.Filters
             if (types.Contains("Playlist") || path.IndexOf("/Playlists", StringComparison.OrdinalIgnoreCase) >= 0)
                 return true;
 
-            // Discrete queries /Users/{userId}/Items?parentId={playlistsFolderGuid} without types
+            // Discrete / Manet queries /Users/{userId}/Items?parentId={playlistsFolderGuid} without types
             // If the response contains playlist items, or has 0 items and parentId looks like playlists folder
             if (qr.Items.Any(i => i.Type == BaseItemKind.Playlist))
                 return true;
+
+            if (TryExtractGuidListFromQuery(ctx.HttpContext.Request, "parentId", out var pids))
+            {
+                foreach (var pid in pids)
+                {
+                    try
+                    {
+                        var folder = _libraryManager.GetItemById(pid);
+                        if (folder != null)
+                        {
+                            var typeName = folder.GetClientTypeName();
+                            if (string.Equals(typeName, "PlaylistFolder", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(folder.Name, "Playlists", StringComparison.OrdinalIgnoreCase))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
 
             return false;
         }
@@ -662,6 +717,127 @@ namespace Resono.Plugin.Filters
                     qr.TotalRecordCount = qr.Items.Count;
                 }
             }
+        }
+
+        private bool ShouldAugmentEmptyLibrary(ResultExecutingContext ctx)
+        {
+            var cfg = Plugin.Instance?.Configuration;
+            if (cfg is null || !cfg.EnableVirtualPlaylists) return false;
+            if (ctx.Result is not ObjectResult { Value: QueryResult<BaseItemDto> qr }) return false;
+            if (qr.TotalRecordCount > 0) return false;
+
+            var path = ctx.HttpContext.Request.Path.Value ?? string.Empty;
+            if (path.IndexOf("/UserViews", StringComparison.OrdinalIgnoreCase) >= 0 || path.IndexOf("/Views", StringComparison.OrdinalIgnoreCase) >= 0)
+                return false;
+
+            // Do not fire on searches (those are handled by ShouldInject)
+            var term = ExtractSearchTerm(ctx.HttpContext);
+            if (!string.IsNullOrWhiteSpace(term)) return false;
+
+            var types = ExtractIncludeItemTypes(ctx.HttpContext);
+            if (types.Contains("MusicArtist") || types.Contains("MusicAlbum") || path.StartsWith("/Artists", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return false;
+        }
+
+        private async Task TryAugmentEmptyLibraryAsync(ResultExecutingContext ctx, CancellationToken ct)
+        {
+            if (ctx.Result is not ObjectResult or || or.Value is not QueryResult<BaseItemDto> qr) return;
+
+            var path = ctx.HttpContext.Request.Path.Value ?? string.Empty;
+            var types = ExtractIncludeItemTypes(ctx.HttpContext);
+            bool wantArtists = types.Contains("MusicArtist") || path.StartsWith("/Artists", StringComparison.OrdinalIgnoreCase);
+            bool wantAlbums = types.Contains("MusicAlbum");
+
+            var chartTracks = await FetchChartTrackListAsync("global", ct).ConfigureAwait(false);
+            if (chartTracks.Count == 0) return;
+
+            if (wantArtists)
+            {
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var artistDtos = new List<BaseItemDto>();
+                foreach (var t in chartTracks)
+                {
+                    if (!string.IsNullOrEmpty(t.ArtistName) && seen.Add(t.ArtistName))
+                    {
+                        var artistGuid = ResonoItemCache.StubGuid("dz-artist", t.ArtistName);
+                        if (!_cache.TryGet(artistGuid, out var artEntry) || artEntry == null)
+                        {
+                            artEntry = new ResonoItemCache.Entry
+                            {
+                                Kind = "artist",
+                                Name = t.ArtistName,
+                                SpotifyId = t.ArtistId,
+                                ImageUrl = t.ImageUrl,
+                                Id = artistGuid
+                            };
+                            _cache.Set(artistGuid, artEntry);
+                        }
+                        artistDtos.Add(BuildArtistDto(artistGuid, artEntry));
+                    }
+                }
+                if (artistDtos.Count > 0)
+                {
+                    qr.Items = artistDtos.ToArray();
+                    qr.TotalRecordCount = qr.Items.Count;
+                }
+            }
+            else if (wantAlbums)
+            {
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var albumDtos = new List<BaseItemDto>();
+                foreach (var t in chartTracks)
+                {
+                    if (!string.IsNullOrEmpty(t.AlbumName) && seen.Add(t.AlbumName))
+                    {
+                        var albumGuid = ResonoItemCache.StubGuid("dz-album", t.AlbumId ?? t.AlbumName);
+                        var artistGuid = !string.IsNullOrEmpty(t.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", t.ArtistName) : (Guid?)null;
+                        if (!_cache.TryGet(albumGuid, out var albEntry) || albEntry == null)
+                        {
+                            albEntry = new ResonoItemCache.Entry
+                            {
+                                Kind = "album",
+                                Name = t.AlbumName,
+                                ArtistName = t.ArtistName,
+                                SpotifyId = t.AlbumId,
+                                ImageUrl = t.ImageUrl,
+                                ArtistId = artistGuid
+                            };
+                            _cache.Set(albumGuid, albEntry);
+                        }
+                        albumDtos.Add(BuildAlbumDto(albumGuid, albEntry));
+                    }
+                }
+                if (albumDtos.Count > 0)
+                {
+                    qr.Items = albumDtos.ToArray();
+                    qr.TotalRecordCount = qr.Items.Count;
+                }
+            }
+        }
+
+        public async Task<List<GatewayTrack>> FetchChartTrackListAsync(string chartId, CancellationToken ct)
+        {
+            var list = new List<GatewayTrack>();
+            try
+            {
+                var cfg = Plugin.Instance!.Configuration;
+                var gatewayUrl = GetEffectiveGatewayUrl(cfg.GatewayUrl);
+                var url = $"{gatewayUrl}/jellyfin/charts/{Uri.EscapeDataString(chartId)}/tracks";
+
+                var client = _httpClientFactory.CreateClient();
+                var res = await client.GetFromJsonAsync<GatewayArtistTopResponse>(url, ct).ConfigureAwait(false);
+                if (res?.Tracks != null)
+                {
+                    return res.Tracks;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to fetch chart tracks: {Message}", ex.Message);
+            }
+            return list;
         }
 
         public async Task<List<BaseItemDto>> FetchChartsAsync(CancellationToken ct)
@@ -725,11 +901,13 @@ namespace Resono.Plugin.Filters
         public static BaseItemDto BuildArtistDto(Guid id, ResonoItemCache.Entry e)
         {
             var imageTag = "resono-" + id.ToString("N");
+            var name = e.Name ?? "(unknown artist)";
+            var pair = new[] { new NameGuidPair { Name = name, Id = id } };
             return new BaseItemDto
             {
                 Id = id,
                 ServerId = Plugin.ServerSystemId,
-                Name = e.Name ?? "(unknown artist)",
+                Name = name,
                 Type = BaseItemKind.MusicArtist,
                 MediaType = MediaType.Unknown,
                 Tags = new[] { "ResonoVirtual" },
@@ -737,6 +915,10 @@ namespace Resono.Plugin.Filters
                 ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new() } },
                 PrimaryImageAspectRatio = 1.0,
                 IsFolder = true,
+                Artists = new[] { name },
+                ArtistItems = pair,
+                AlbumArtists = pair,
+                AlbumArtist = name,
                 ChildCount = 50,
                 SongCount = 50,
                 AlbumCount = 20,

@@ -463,13 +463,6 @@ namespace Resono.Plugin.Filters
                                 return;
                             }
                         }
-
-                        ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
-                        {
-                            Items = Array.Empty<BaseItemDto>(),
-                            TotalRecordCount = 0
-                        });
-                        return;
                     }
                 }
             }
