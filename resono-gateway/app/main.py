@@ -164,6 +164,7 @@ async def _do_stream(track: CatalogTrack, db: AsyncSession):
 
 @app.get("/stream")
 async def stream_query(
+    request: Request,
     artist: str | None = Query(None),
     title: str | None = Query(None),
     q: str | None = Query(None),
@@ -171,9 +172,14 @@ async def stream_query(
 ):
     """
     Direct stream endpoint compatible with legacy and external players.
-    Accepts artist/title or general search query, acquires audio from Soulseek,
+    Accepts artist/title or general search query, acquires audio from Deezer CDN,
     and returns an HTTP 206 stream response.
     """
+    req_arl = request.headers.get("x-deezer-arl") or request.query_params.get("arl")
+    if req_arl:
+        from app.core.deezer_stream import deezer_streamer
+        deezer_streamer.update_arl(req_arl)
+
     query_str = q or f"{artist or ''} {title or ''}".strip()
     if not query_str:
         raise HTTPException(status_code=400, detail="Missing artist/title or query parameter")
@@ -190,6 +196,11 @@ async def stream_track(track_id: str, request: Request, db: AsyncSession = Depen
     Audio playback & streaming endpoint for Jellyfin.
     Supports HTTP 206 Partial Content (byte-range seeking).
     """
+    req_arl = request.headers.get("x-deezer-arl") or request.query_params.get("arl")
+    if req_arl:
+        from app.core.deezer_stream import deezer_streamer
+        deezer_streamer.update_arl(req_arl)
+
     # 1. Fast path: Direct on-disk audio cache check for repeat/replay
     cached = cache_manager.find_cached_file(track_id)
     if not cached:
@@ -574,6 +585,57 @@ async def download_plugin_dll():
         if p.exists():
             return FileResponse(p, filename="Resono.Plugin.dll", media_type="application/octet-stream")
     raise HTTPException(status_code=404, detail="Resono.Plugin.dll not found")
+
+
+@app.post("/api/config/deezer-arl")
+async def set_deezer_arl(payload: dict[str, Any]):
+    """Update active Deezer ARL token and persist it to disk."""
+    arl = payload.get("arl")
+    if not arl or not str(arl).strip():
+        raise HTTPException(status_code=400, detail="Missing 'arl' in request body")
+    from app.core.deezer_stream import deezer_streamer
+    clean_arl = str(arl).strip()
+    deezer_streamer.update_arl(clean_arl)
+
+    import httpx
+    valid = False
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            valid = await deezer_streamer._ensure_session(client)
+    except Exception as e:
+        logger.warning(f"[DEEZER-ARL] Immediate validation check failed: {e}")
+
+    return {
+        "status": "ok" if valid else "unverified",
+        "valid": valid,
+        "message": "Deezer session authenticated successfully" if valid else "Deezer session could not be verified; check ARL token."
+    }
+
+
+@app.get("/api/config/deezer-arl/status")
+async def get_deezer_arl_status():
+    """Check Deezer ARL configuration and session status."""
+    from app.core.deezer_stream import deezer_streamer
+    current_arl = deezer_streamer.arl
+    has_arl = bool(current_arl and current_arl.strip())
+    masked = f"{current_arl[:6]}...{current_arl[-6:]}" if has_arl and len(current_arl) > 12 else None
+    valid = False
+    if has_arl:
+        try:
+            import httpx
+            async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+                valid = await deezer_streamer._ensure_session(client)
+        except Exception:
+            pass
+
+    return {
+        "has_arl": has_arl,
+        "arl_preview": masked,
+        "session_valid": valid,
+        "primary_source": settings.PRIMARY_PLAYBACK_SOURCE,
+        "fallback_source": settings.FALLBACK_PLAYBACK_SOURCE
+    }
+
 
 if __name__ == "__main__":
     import uvicorn

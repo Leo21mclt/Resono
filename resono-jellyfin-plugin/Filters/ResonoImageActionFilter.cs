@@ -179,6 +179,18 @@ namespace Resono.Plugin.Filters
                 return await FetchImageBytesOrRedirectAsync(entry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
             }
 
+            // 1.2 If item is known and has AlbumId, fallback to parent album's ImageUrl
+            if (entry != null && string.IsNullOrEmpty(entry.ImageUrl) && entry.AlbumId.HasValue)
+            {
+                if (_cache.TryGet(entry.AlbumId.Value, out var parentAlb) && !string.IsNullOrEmpty(parentAlb?.ImageUrl))
+                {
+                    entry.ImageUrl = parentAlb.ImageUrl;
+                    _cache.Set(itemId, entry);
+                    _logger.LogInformation("[Resono] Serving parent album image for item {Id} from album {AlbId}", itemId, entry.AlbumId.Value);
+                    return await FetchImageBytesOrRedirectAsync(entry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
+                }
+            }
+
             var cfg = Plugin.Instance?.Configuration;
             var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
             var client = _httpClientFactory.CreateClient();

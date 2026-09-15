@@ -27,24 +27,57 @@ class DeezerStreamer:
     """Manages authenticated Deezer CDN audio acquisition using ARL."""
 
     def __init__(self, arl: str | None = None):
-        self.arl = arl or getattr(settings, "DEEZER_ARL", None)
+        self.arl = arl or getattr(settings, "DEEZER_ARL", None) or self._load_stored_arl()
         self._license_token: str | None = None
         self._user_token: str | None = None
         self._session_expires: float = 0.0
         self._session_lock = asyncio.Lock()
 
+    def _get_storage_path(self) -> Path:
+        data_dir = getattr(settings, "DATA_DIR", Path("./data"))
+        return Path(data_dir) / "deezer_arl.json"
+
+    def _load_stored_arl(self) -> str | None:
+        try:
+            p = self._get_storage_path()
+            if p.exists():
+                import json
+                data = json.loads(p.read_text(encoding="utf-8"))
+                stored = data.get("arl")
+                if stored and stored.strip():
+                    logger.info("[DEEZER-ARL] Loaded persistent ARL from disk storage.")
+                    return stored.strip()
+        except Exception as e:
+            logger.debug(f"[DEEZER-ARL] Failed to load stored ARL: {e}")
+        return None
+
+    def _save_stored_arl(self, arl: str):
+        try:
+            p = self._get_storage_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            import json
+            p.write_text(json.dumps({"arl": arl.strip(), "updated_at": time.time()}), encoding="utf-8")
+            logger.info("[DEEZER-ARL] Stored persistent ARL to disk storage.")
+        except Exception as e:
+            logger.warning(f"[DEEZER-ARL] Failed to persist ARL: {e}")
+
     def update_arl(self, new_arl: str):
-        if new_arl and new_arl.strip() != (self.arl or ""):
-            self.arl = new_arl.strip()
+        cleaned = (new_arl or "").strip()
+        if cleaned and cleaned != (self.arl or ""):
+            logger.info("[DEEZER-ARL] Updating active ARL token...")
+            self.arl = cleaned
             self._license_token = None
             self._user_token = None
             self._session_expires = 0.0
+            self._save_stored_arl(cleaned)
 
     async def _ensure_session(self, client: httpx.AsyncClient) -> bool:
         """Authenticate session using ARL and obtain license_token."""
-        current_arl = self.arl or getattr(settings, "DEEZER_ARL", None)
+        current_arl = self.arl or getattr(settings, "DEEZER_ARL", None) or self._load_stored_arl()
         if not current_arl:
             return False
+        if not self.arl and current_arl:
+            self.arl = current_arl
 
         now = time.time()
         if self._license_token and now < self._session_expires:
@@ -78,6 +111,7 @@ class DeezerStreamer:
                 results = data.get("results", {})
                 self._user_token = results.get("checkForm")
                 user_options = results.get("USER", {}).get("OPTIONS", {})
+                user_name = results.get("USER", {}).get("BLOG_NAME", "User")
                 self._license_token = user_options.get("license_token")
 
                 if not self._license_token:
@@ -85,7 +119,7 @@ class DeezerStreamer:
                     return False
 
                 self._session_expires = now + 1800
-                logger.info("[DEEZER-ARL] Authenticated successfully with Deezer CDN.")
+                logger.info(f"[DEEZER-ARL] Authenticated successfully with Deezer CDN (Account: {user_name}).")
                 return True
             except Exception as e:
                 logger.error(f"[DEEZER-ARL] Authentication failed: {e}")

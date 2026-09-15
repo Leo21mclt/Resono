@@ -929,7 +929,15 @@ namespace Resono.Plugin.Filters
                 IsFolder = true,
                 CanDelete = false,
                 CanDownload = false,
-                LocationType = LocationType.Virtual
+                LocationType = LocationType.Virtual,
+                UserData = new UserItemDataDto
+                {
+                    PlaybackPositionTicks = 0,
+                    PlayCount = 0,
+                    IsFavorite = false,
+                    Played = false,
+                    Key = id.ToString("N")
+                }
             };
         }
 
@@ -958,6 +966,14 @@ namespace Resono.Plugin.Filters
                 SongCount = 50,
                 AlbumCount = 20,
                 LocationType = LocationType.Virtual,
+                UserData = new UserItemDataDto
+                {
+                    PlaybackPositionTicks = 0,
+                    PlayCount = 0,
+                    IsFavorite = false,
+                    Played = false,
+                    Key = id.ToString("N")
+                }
             };
         }
 
@@ -987,6 +1003,14 @@ namespace Resono.Plugin.Filters
                 ArtistItems = artistPair ?? Array.Empty<NameGuidPair>(),
                 IsFolder = true,
                 LocationType = LocationType.Virtual,
+                UserData = new UserItemDataDto
+                {
+                    PlaybackPositionTicks = 0,
+                    PlayCount = 0,
+                    IsFavorite = false,
+                    Played = false,
+                    Key = id.ToString("N")
+                }
             };
         }
 
@@ -1069,6 +1093,14 @@ namespace Resono.Plugin.Filters
                 MediaSources = new[] { mediaSource },
                 MediaSourceCount = 1,
                 Container = "mp3",
+                UserData = new UserItemDataDto
+                {
+                    PlaybackPositionTicks = 0,
+                    PlayCount = 0,
+                    IsFavorite = false,
+                    Played = false,
+                    Key = id.ToString("N")
+                }
             };
         }
     }

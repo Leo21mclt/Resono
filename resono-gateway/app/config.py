@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # Playback Acquisition settings
     PRIMARY_PLAYBACK_SOURCE: str = "deezer"  # "deezer" | "soulseek"
-    FALLBACK_PLAYBACK_SOURCE: str = "soulseek"  # "soulseek" | "deezer" | "none"
+    FALLBACK_PLAYBACK_SOURCE: str = "none"  # "none" | "soulseek" | "deezer"
     DEEZER_ARL: str | None = None
 
     # Storage paths

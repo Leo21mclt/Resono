@@ -124,7 +124,7 @@ class AcquisitionManager:
         logger.info(f"[ACQUIRE] Starting acquisition for '{track.title}' by '{track.artist_name}' ({track.canonical_id})")
 
         primary_source = getattr(settings, "PRIMARY_PLAYBACK_SOURCE", "deezer").lower().strip()
-        fallback_source = getattr(settings, "FALLBACK_PLAYBACK_SOURCE", "soulseek").lower().strip()
+        fallback_source = getattr(settings, "FALLBACK_PLAYBACK_SOURCE", "none").lower().strip()
 
         # -------------------------------------------------------------
         # STEP 0: Deezer CDN Fast-Path (if primary playback source)
@@ -137,7 +137,7 @@ class AcquisitionManager:
             except Exception as e:
                 logger.error(f"[ACQUIRE] Deezer acquisition error: {e}", exc_info=True)
             if fallback_source == "none":
-                raise FileNotFoundError(f"Failed to acquire recording from Deezer for '{track.title}'")
+                raise FileNotFoundError(f"Failed to acquire recording from Deezer for '{track.title}'. Please check that your Deezer ARL token is active.")
             logger.info(f"[ACQUIRE] Deezer CDN stream unavailable or failed; falling back to Soulseek P2P for '{track.title}'...")
 
         # -------------------------------------------------------------

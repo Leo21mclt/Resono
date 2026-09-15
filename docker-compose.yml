@@ -10,20 +10,20 @@ services:
       - ${JELLYFIN_MEDIA_DIR:-./media/music}:/media/music
     restart: unless-stopped
 
-  slskd:
-    image: slskd/slskd:latest
-    container_name: slskd
-    restart: unless-stopped
-    environment:
-      - SLSKD_NO_AUTH=true
-      - SLSKD_SLSK_USERNAME=${SLSKD_SLSK_USERNAME:-}
-      - SLSKD_SLSK_PASSWORD=${SLSKD_SLSK_PASSWORD:-}
-    volumes:
-      - slskd-config:/app
-      - slskd-downloads:/app/downloads
-    ports:
-      - "5030:5030"
-      - "2234:2234"
+#  slskd:
+#    image: slskd/slskd:latest
+#    container_name: slskd
+#    restart: unless-stopped
+#    environment:
+#      - SLSKD_NO_AUTH=true
+#      - SLSKD_SLSK_USERNAME=${SLSKD_SLSK_USERNAME:-}
+#      - SLSKD_SLSK_PASSWORD=${SLSKD_SLSK_PASSWORD:-}
+#    volumes:
+#      - slskd-config:/app
+#      - slskd-downloads:/app/downloads
+#    ports:
+#      - "5030:5030"
+#      - "2234:2234"
 
   resono-gateway:
     build:
@@ -32,27 +32,20 @@ services:
     image: ghcr.io/leo21mclt/resono:latest
     container_name: resono-gateway
     restart: unless-stopped
-    depends_on:
-      - slskd
     environment:
       - RESONO_HOST=0.0.0.0
       - RESONO_PORT=8080
-      - RESONO_SOULSEEK_BACKEND=slskd
-      - RESONO_SLSKD_URL=${RESONO_SLSKD_URL:-http://slskd:5030}
-      - RESONO_SLSKD_API_KEY=${RESONO_SLSKD_API_KEY:-}
-      - RESONO_SLSKD_DOWNLOADS_PATH=/downloads
       - RESONO_MAX_CACHE_SIZE_GB=${RESONO_MAX_CACHE_SIZE_GB:-50.0}
       - RESONO_MIN_FREE_DISK_GB=${RESONO_MIN_FREE_DISK_GB:-10.0}
       - RESONO_MATCHER_CONFIDENCE_THRESHOLD=${RESONO_MATCHER_CONFIDENCE_THRESHOLD:-0.80}
       - RESONO_DEEZER_ARL=${RESONO_DEEZER_ARL:-}
       - RESONO_PRIMARY_PLAYBACK_SOURCE=${RESONO_PRIMARY_PLAYBACK_SOURCE:-deezer}
-      - RESONO_FALLBACK_PLAYBACK_SOURCE=${RESONO_FALLBACK_PLAYBACK_SOURCE:-soulseek}
+      - RESONO_FALLBACK_PLAYBACK_SOURCE=${RESONO_FALLBACK_PLAYBACK_SOURCE:-none}
       - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
     volumes:
       - resono-data:/app/data
       - resono-cache:/app/cache
-      - slskd-downloads:/downloads:ro
     ports:
       - "8080:8080"
     healthcheck:
@@ -63,7 +56,5 @@ services:
       start_period: 15s
 
 volumes:
-  slskd-config:
-  slskd-downloads:
   resono-data:
   resono-cache:
