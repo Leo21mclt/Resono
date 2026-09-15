@@ -68,8 +68,9 @@ namespace Resono.Plugin.Services
             }
         }
 
-        public bool RegisterAlbum(Guid id, string albumName, string? artistName)
+        public bool RegisterAlbum(Guid id, string? albumName, string? artistName)
         {
+            if (string.IsNullOrWhiteSpace(albumName)) return false;
             if (_registered.ContainsKey(id)) return false;
 
             try
@@ -97,8 +98,9 @@ namespace Resono.Plugin.Services
             }
         }
 
-        public bool RegisterArtist(Guid id, string artistName)
+        public bool RegisterArtist(Guid id, string? artistName)
         {
+            if (string.IsNullOrWhiteSpace(artistName)) return false;
             if (_registered.ContainsKey(id)) return false;
 
             try
