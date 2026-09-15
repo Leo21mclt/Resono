@@ -499,7 +499,7 @@ namespace Resono.Plugin.Filters
                     if (chartTracks.Count > 0)
                     {
                         emptyQr.Items = chartTracks.Take(20).ToArray();
-                        emptyQr.TotalRecordCount = emptyQr.Items.Length;
+                        emptyQr.TotalRecordCount = emptyQr.Items.Count;
                     }
                 }
             }

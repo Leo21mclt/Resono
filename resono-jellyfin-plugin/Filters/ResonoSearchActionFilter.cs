@@ -621,7 +621,7 @@ namespace Resono.Plugin.Filters
             if (additions.Count > 0)
             {
                 qr.Items = additions.Concat(qr.Items).ToArray();
-                qr.TotalRecordCount = qr.Items.Length;
+                qr.TotalRecordCount = qr.Items.Count;
             }
         }
 
@@ -659,7 +659,7 @@ namespace Resono.Plugin.Filters
                 if (toAdd.Length > 0)
                 {
                     qr.Items = qr.Items.Concat(toAdd).ToArray();
-                    qr.TotalRecordCount = qr.Items.Length;
+                    qr.TotalRecordCount = qr.Items.Count;
                 }
             }
         }
@@ -878,6 +878,9 @@ namespace Resono.Plugin.Filters
 
         [JsonPropertyName("imageUrl")]
         public string? ImageUrl { get; set; }
+
+        [JsonPropertyName("providerIds")]
+        public Dictionary<string, string>? ProviderIds { get; set; }
     }
 
     public class GatewayAlbum
@@ -896,6 +899,9 @@ namespace Resono.Plugin.Filters
 
         [JsonPropertyName("imageUrl")]
         public string? ImageUrl { get; set; }
+
+        [JsonPropertyName("providerIds")]
+        public Dictionary<string, string>? ProviderIds { get; set; }
     }
 
     public class GatewayTrack
@@ -935,5 +941,8 @@ namespace Resono.Plugin.Filters
 
         [JsonPropertyName("streamUrl")]
         public string? StreamUrl { get; set; }
+
+        [JsonPropertyName("providerIds")]
+        public Dictionary<string, string>? ProviderIds { get; set; }
     }
 }
