@@ -761,6 +761,7 @@ namespace Resono.Plugin.Filters
                             ArtistId = artistEntry.Id
                         };
                         _cache.Set(id, entry);
+                        _registrar.RegisterAlbum(id, al.Name ?? "", al.ArtistName ?? artistEntry.Name);
                         list.Add(ResonoSearchActionFilter.BuildAlbumDto(id, entry));
                     }
                 }
@@ -783,6 +784,7 @@ namespace Resono.Plugin.Filters
                                 ArtistId = artistEntry.Id
                             };
                             _cache.Set(id, entry);
+                            _registrar.RegisterAlbum(id, al.Name ?? "", al.ArtistName ?? artistEntry.Name);
                             list.Add(ResonoSearchActionFilter.BuildAlbumDto(id, entry));
                         }
                     }

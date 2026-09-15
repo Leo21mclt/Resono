@@ -79,7 +79,7 @@ namespace Resono.Plugin.Filters
                 if (ShouldInject(ctx, out var searchTerm))
                 {
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.HttpContext.RequestAborted);
-                    cts.CancelAfter(TimeSpan.FromSeconds(5));
+                    cts.CancelAfter(TimeSpan.FromSeconds(10));
                     await TryAugmentSearchAsync(ctx, searchTerm!, cts.Token).ConfigureAwait(false);
                 }
                 else if (ShouldAugmentRecentlyPlayed(ctx))
@@ -89,13 +89,13 @@ namespace Resono.Plugin.Filters
                 else if (ShouldAugmentPlaylists(ctx))
                 {
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.HttpContext.RequestAborted);
-                    cts.CancelAfter(TimeSpan.FromSeconds(4));
+                    cts.CancelAfter(TimeSpan.FromSeconds(6));
                     await TryAugmentPlaylistsAsync(ctx, cts.Token).ConfigureAwait(false);
                 }
                 else if (ShouldAugmentEmptyLibrary(ctx))
                 {
                     using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.HttpContext.RequestAborted);
-                    cts.CancelAfter(TimeSpan.FromSeconds(4));
+                    cts.CancelAfter(TimeSpan.FromSeconds(6));
                     await TryAugmentEmptyLibraryAsync(ctx, cts.Token).ConfigureAwait(false);
                 }
             }
@@ -186,10 +186,14 @@ namespace Resono.Plugin.Filters
             }
             else
             {
-                var lazy = _inFlightSearches.GetOrAdd(cacheKey, key => new Lazy<Task<GatewaySearchResponse?>>(() => FetchGatewaySearchAsync(gatewayUrl, term, limit, provider, fallback, cfg.EnableSearchCache, cfg.DeezerArl, ct)));
+                var lazy = _inFlightSearches.GetOrAdd(cacheKey, key => new Lazy<Task<GatewaySearchResponse?>>(() => FetchGatewaySearchAsync(gatewayUrl, term, limit, provider, fallback, cfg.EnableSearchCache, cfg.DeezerArl)));
                 try
                 {
-                    searchData = await lazy.Value.ConfigureAwait(false);
+                    searchData = await lazy.Value.WaitAsync(ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // User aborted this specific HTTP request (e.g. typed next letter), but background fetch continues
                 }
                 finally
                 {
@@ -210,7 +214,7 @@ namespace Resono.Plugin.Filters
             }
         }
 
-        private async Task<GatewaySearchResponse?> FetchGatewaySearchAsync(string gatewayUrl, string term, int limit, string provider, string fallback, bool enableCache, string? deezerArl, CancellationToken ct)
+        private async Task<GatewaySearchResponse?> FetchGatewaySearchAsync(string gatewayUrl, string term, int limit, string provider, string fallback, bool enableCache, string? deezerArl)
         {
             try
             {
@@ -221,7 +225,8 @@ namespace Resono.Plugin.Filters
                     client.DefaultRequestHeaders.Remove("X-Deezer-Arl");
                     client.DefaultRequestHeaders.Add("X-Deezer-Arl", deezerArl.Trim());
                 }
-                var data = await client.GetFromJsonAsync<GatewaySearchResponse>(url, ct).ConfigureAwait(false);
+                using var fetchCts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                var data = await client.GetFromJsonAsync<GatewaySearchResponse>(url, fetchCts.Token).ConfigureAwait(false);
                 if (data != null && enableCache)
                 {
                     var cacheKey = $"{provider}:{fallback}:{limit}:{term.Trim().ToLowerInvariant()}";

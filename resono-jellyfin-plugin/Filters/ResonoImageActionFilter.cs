@@ -18,15 +18,18 @@ namespace Resono.Plugin.Filters
 
         private readonly ResonoItemCache _cache;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly MediaBrowser.Controller.Library.ILibraryManager _libraryManager;
         private readonly ILogger<ResonoImageActionFilter> _logger;
 
         public ResonoImageActionFilter(
             ResonoItemCache cache,
             IHttpClientFactory httpClientFactory,
+            MediaBrowser.Controller.Library.ILibraryManager libraryManager,
             ILogger<ResonoImageActionFilter> logger)
         {
             _cache = cache;
             _httpClientFactory = httpClientFactory;
+            _libraryManager = libraryManager;
             _logger = logger;
         }
 
@@ -174,6 +177,57 @@ namespace Resono.Plugin.Filters
             var cfg = Plugin.Instance?.Configuration;
             var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
             var client = _httpClientFactory.CreateClient();
+
+            // 1.5 Fallback to Jellyfin LibraryManager if item was registered in library
+            if (entry == null || string.IsNullOrEmpty(entry.ImageUrl))
+            {
+                try
+                {
+                    var libItem = _libraryManager.GetItemById(itemId);
+                    if (libItem is MediaBrowser.Controller.Entities.Audio.MusicAlbum albItem && !string.IsNullOrEmpty(albItem.Name))
+                    {
+                        var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(albItem.Name)}&limit=3";
+                        var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        var match = searchRes?.Albums?.FirstOrDefault(a => string.Equals(a.Name, albItem.Name, StringComparison.OrdinalIgnoreCase)) ?? searchRes?.Albums?.FirstOrDefault();
+                        if (match != null && !string.IsNullOrEmpty(match.ImageUrl))
+                        {
+                            entry = new ResonoItemCache.Entry
+                            {
+                                Kind = "album",
+                                Name = albItem.Name,
+                                ArtistName = albItem.AlbumArtist ?? albItem.Artists.FirstOrDefault(),
+                                SpotifyId = match.Id,
+                                ImageUrl = match.ImageUrl
+                            };
+                            _cache.Set(itemId, entry);
+                            _logger.LogInformation("[Resono] Resolved artwork for library album '{Album}' ({Id}) via search", albItem.Name, itemId);
+                            return await FetchImageBytesOrRedirectAsync(match.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
+                        }
+                    }
+                    else if (libItem is MediaBrowser.Controller.Entities.Audio.Audio audioItem && !string.IsNullOrEmpty(audioItem.Name))
+                    {
+                        var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(audioItem.Name)}&limit=3";
+                        var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        var match = searchRes?.Tracks?.FirstOrDefault(t => string.Equals(t.Name, audioItem.Name, StringComparison.OrdinalIgnoreCase)) ?? searchRes?.Tracks?.FirstOrDefault();
+                        if (match != null && !string.IsNullOrEmpty(match.ImageUrl))
+                        {
+                            entry = new ResonoItemCache.Entry
+                            {
+                                Kind = "track",
+                                Name = audioItem.Name,
+                                ArtistName = audioItem.Artists.FirstOrDefault(),
+                                AlbumName = audioItem.Album,
+                                SpotifyId = match.Id,
+                                ImageUrl = match.ImageUrl
+                            };
+                            _cache.Set(itemId, entry);
+                            _logger.LogInformation("[Resono] Resolved artwork for library audio '{Track}' ({Id}) via search", audioItem.Name, itemId);
+                            return await FetchImageBytesOrRedirectAsync(match.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
+                        }
+                    }
+                }
+                catch { }
+            }
 
             // 2. Dynamic artwork resolution for artists
             if (entry != null && entry.Kind == "artist" && !string.IsNullOrEmpty(entry.Name))

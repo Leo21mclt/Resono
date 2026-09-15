@@ -307,6 +307,10 @@ async def jellyfin_track_metadata(track_id: str):
 async def jellyfin_album_details(album_id: str):
     """Deliver album metadata and child track list for Jellyfin virtual album views."""
     data = await catalog_manager.get_album(album_id)
+    if not data and not album_id.startswith("deezer:") and not album_id.startswith("itunes:") and not album_id.startswith("spotify:"):
+        res = await catalog_manager.search(album_id, limit=5)
+        if res.albums:
+            data = await catalog_manager.get_album(res.albums[0].id)
     if not data:
         raise HTTPException(status_code=404, detail="Album not found")
     album, tracks = data
@@ -338,10 +342,71 @@ async def jellyfin_album_details(album_id: str):
         ]
     }
 
+@app.get("/jellyfin/artist/{artist_id}/top")
+async def jellyfin_artist_top_tracks(artist_id: str, name: str | None = Query(None), limit: int = Query(10, ge=1, le=50)):
+    """Deliver top tracks for an artist."""
+    tracks = await catalog_manager.get_artist_top_tracks(artist_id, name=name, limit=limit)
+    return {
+        "tracks": [
+            {
+                "id": t.id,
+                "canonicalId": catalog_manager.to_canonical_track(t).canonical_id,
+                "name": t.title,
+                "artistName": t.artist_name,
+                "artistId": t.artist_id,
+                "albumName": t.album_title,
+                "albumId": t.album_id,
+                "durationMs": t.duration_ms,
+                "trackNumber": t.track_number,
+                "discNumber": t.disc_number,
+                "imageUrl": t.artwork_url,
+                "streamUrl": f"/playback/{t.id}"
+            }
+            for t in tracks
+        ]
+    }
+
+@app.get("/jellyfin/artist/{artist_id}/albums")
+async def jellyfin_artist_albums(artist_id: str, name: str | None = Query(None), limit: int = Query(50, ge=1, le=100)):
+    """Deliver discography albums for an artist."""
+    albums = await catalog_manager.get_artist_albums(artist_id, name=name, limit=limit)
+    return {
+        "albums": [
+            {
+                "id": al.id,
+                "name": al.title,
+                "artistName": al.artist_name,
+                "releaseDate": al.release_date,
+                "imageUrl": al.artwork_url,
+                "totalTracks": al.total_tracks
+            }
+            for al in albums
+        ]
+    }
+
+@app.get("/jellyfin/artist/{artist_id}/similar")
+async def jellyfin_artist_similar(artist_id: str, name: str | None = Query(None), limit: int = Query(10, ge=1, le=30)):
+    """Deliver similar artists."""
+    artists = await catalog_manager.get_artist_related(artist_id, name=name, limit=limit)
+    return {
+        "artists": [
+            {
+                "id": a.id,
+                "name": a.name,
+                "imageUrl": a.artwork_url
+            }
+            for a in artists
+        ]
+    }
+
 @app.get("/jellyfin/artist/{artist_id:path}")
 async def jellyfin_artist_details(artist_id: str):
     """Deliver artist metadata for Jellyfin virtual artist views."""
     artist = await catalog_manager.get_artist(artist_id)
+    if not artist and not artist_id.startswith("deezer:") and not artist_id.startswith("itunes:") and not artist_id.startswith("spotify:"):
+        res = await catalog_manager.search(artist_id, limit=5)
+        if res.artists:
+            artist = res.artists[0]
     if not artist:
         raise HTTPException(status_code=404, detail="Artist not found")
     return {
@@ -418,63 +483,6 @@ async def jellyfin_pin_track(track_id: str, db: AsyncSession = Depends(get_db)):
             asyncio.create_task(_bg_pin(canonical))
             return {"status": "acquiring_and_pinned", "canonical_id": canonical.canonical_id}
     return {"status": "acknowledged", "track_id": track_id}
-
-@app.get("/jellyfin/artist/{artist_id:path}/top")
-async def jellyfin_artist_top_tracks(artist_id: str, name: str | None = Query(None), limit: int = Query(10, ge=1, le=50)):
-    """Deliver top tracks for an artist."""
-    tracks = await catalog_manager.get_artist_top_tracks(artist_id, name=name, limit=limit)
-    return {
-        "tracks": [
-            {
-                "id": t.id,
-                "canonicalId": catalog_manager.to_canonical_track(t).canonical_id,
-                "name": t.title,
-                "artistName": t.artist_name,
-                "artistId": t.artist_id,
-                "albumName": t.album_title,
-                "albumId": t.album_id,
-                "durationMs": t.duration_ms,
-                "trackNumber": t.track_number,
-                "discNumber": t.disc_number,
-                "imageUrl": t.artwork_url,
-                "streamUrl": f"/playback/{t.id}"
-            }
-            for t in tracks
-        ]
-    }
-
-@app.get("/jellyfin/artist/{artist_id:path}/albums")
-async def jellyfin_artist_albums(artist_id: str, name: str | None = Query(None), limit: int = Query(50, ge=1, le=100)):
-    """Deliver discography albums for an artist."""
-    albums = await catalog_manager.get_artist_albums(artist_id, name=name, limit=limit)
-    return {
-        "albums": [
-            {
-                "id": al.id,
-                "name": al.title,
-                "artistName": al.artist_name,
-                "releaseDate": al.release_date,
-                "imageUrl": al.artwork_url,
-                "totalTracks": al.total_tracks
-            }
-            for al in albums
-        ]
-    }
-
-@app.get("/jellyfin/artist/{artist_id:path}/similar")
-async def jellyfin_artist_similar(artist_id: str, name: str | None = Query(None), limit: int = Query(10, ge=1, le=30)):
-    """Deliver similar artists."""
-    artists = await catalog_manager.get_artist_related(artist_id, name=name, limit=limit)
-    return {
-        "artists": [
-            {
-                "id": a.id,
-                "name": a.name,
-                "imageUrl": a.artwork_url
-            }
-            for a in artists
-        ]
-    }
 
 @app.get("/jellyfin/charts")
 async def jellyfin_get_charts(country: str = Query("PE")):
