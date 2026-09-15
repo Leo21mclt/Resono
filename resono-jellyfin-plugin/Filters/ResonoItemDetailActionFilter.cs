@@ -33,6 +33,12 @@ namespace Resono.Plugin.Filters
         private readonly MediaBrowser.Controller.Session.ISessionManager _sessionManager;
         private readonly ILogger<ResonoItemDetailActionFilter> _logger;
 
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Items)> _artistAlbumsCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Items)> _artistTopTracksCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<Guid, (DateTime Expires, List<BaseItemDto> Items)> _albumTracksCache = new();
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Items)> _chartTracksCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan MetadataCacheDuration = TimeSpan.FromMinutes(10);
+
         public ResonoItemDetailActionFilter(
             ResonoItemCache cache,
             IHttpClientFactory httpClientFactory,
@@ -325,8 +331,42 @@ namespace Resono.Plugin.Filters
             }
 
             // 7. Handle /Items queries
-            if (path.EndsWith("/Items", StringComparison.OrdinalIgnoreCase))
+            var cleanPath = path.TrimEnd('/');
+            if (cleanPath.EndsWith("/Items", StringComparison.OrdinalIgnoreCase))
             {
+                // (a0) Query by specific IDs parameter (/Items?ids=... or /Users/{u}/Items?ids=...)
+                if (TryExtractGuidListFromQuery(req, "ids", out var specificIds) || TryExtractGuidListFromQuery(req, "Ids", out specificIds))
+                {
+                    var matchingItems = new List<BaseItemDto>();
+                    foreach (var sId in specificIds)
+                    {
+                        if (!_cache.TryGet(sId, out var sEntry) || sEntry == null)
+                        {
+                            sEntry = await TryResolveItemFromGatewayAsync(sId, CancellationToken.None).ConfigureAwait(false);
+                        }
+                        if (sEntry != null)
+                        {
+                            BaseItemDto dto = sEntry.Kind switch
+                            {
+                                "artist" => ResonoSearchActionFilter.BuildArtistDto(sId, sEntry),
+                                "album" => ResonoSearchActionFilter.BuildAlbumDto(sId, sEntry),
+                                "playlist" => ResonoSearchActionFilter.BuildPlaylistDto(sId, sEntry),
+                                _ => ResonoSearchActionFilter.BuildTrackDto(sId, sEntry)
+                            };
+                            matchingItems.Add(dto);
+                        }
+                    }
+                    if (matchingItems.Count > 0)
+                    {
+                        ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
+                        {
+                            Items = matchingItems.ToArray(),
+                            TotalRecordCount = matchingItems.Count
+                        });
+                        return;
+                    }
+                }
+
                 // (a) Album Tracklist via AlbumIds parameter (/Items?albumIds={id})
                 if (TryExtractGuidListFromQuery(req, "albumIds", out var albIds) || TryExtractGuidListFromQuery(req, "albumId", out albIds))
                 {
@@ -694,7 +734,7 @@ namespace Resono.Plugin.Filters
 
             if (rv is null || !Guid.TryParse(rv.ToString(), out id)) return false;
 
-            var path = ctx.HttpContext.Request.Path.Value ?? string.Empty;
+            var path = ctx.HttpContext.Request.Path.Value?.TrimEnd('/') ?? string.Empty;
             var idStr = id.ToString("N");
             var idWithDashes = id.ToString();
             if (!path.EndsWith(idStr, StringComparison.OrdinalIgnoreCase) && !path.EndsWith(idWithDashes, StringComparison.OrdinalIgnoreCase))
@@ -719,16 +759,24 @@ namespace Resono.Plugin.Filters
 
         private async Task<List<BaseItemDto>> FetchArtistAlbumsAsync(ResonoItemCache.Entry artistEntry, CancellationToken ct)
         {
+            var cacheKey = !string.IsNullOrEmpty(artistEntry.SpotifyId) ? artistEntry.SpotifyId : (artistEntry.Name ?? "");
+            if (!string.IsNullOrEmpty(cacheKey) && _artistAlbumsCache.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow < cached.Expires)
+            {
+                return cached.Items;
+            }
+
             var list = new List<BaseItemDto>();
             var cfg = Plugin.Instance!.Configuration;
             var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
             var client = _httpClientFactory.CreateClient();
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var fetchToken = timeoutCts.Token;
 
             if (string.IsNullOrWhiteSpace(artistEntry.Name) && !string.IsNullOrEmpty(artistEntry.SpotifyId))
             {
                 try
                 {
-                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(artistEntry.SpotifyId)}", ct).ConfigureAwait(false);
+                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(artistEntry.SpotifyId)}", fetchToken).ConfigureAwait(false);
                     if (art != null && !string.IsNullOrEmpty(art.Name))
                     {
                         artistEntry.Name = art.Name;
@@ -745,7 +793,7 @@ namespace Resono.Plugin.Filters
             {
                 var idParam = !string.IsNullOrEmpty(artistEntry.SpotifyId) ? artistEntry.SpotifyId : artistEntry.Name;
                 var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam ?? "")}/albums?name={Uri.EscapeDataString(artistEntry.Name ?? "")}";
-                var res = await client.GetFromJsonAsync<GatewayArtistAlbumsResponse>(url, ct).ConfigureAwait(false);
+                var res = await client.GetFromJsonAsync<GatewayArtistAlbumsResponse>(url, fetchToken).ConfigureAwait(false);
                 if (res?.Albums != null && res.Albums.Count > 0)
                 {
                     foreach (var al in res.Albums)
@@ -768,7 +816,7 @@ namespace Resono.Plugin.Filters
                 else
                 {
                     var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(artistEntry.Name ?? "")}&limit=30";
-                    var searchData = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, ct).ConfigureAwait(false);
+                    var searchData = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, fetchToken).ConfigureAwait(false);
                     if (searchData?.Albums != null)
                     {
                         foreach (var al in searchData.Albums)
@@ -789,6 +837,11 @@ namespace Resono.Plugin.Filters
                         }
                     }
                 }
+
+                if (list.Count > 0 && !string.IsNullOrEmpty(cacheKey))
+                {
+                    _artistAlbumsCache[cacheKey] = (DateTime.UtcNow.Add(MetadataCacheDuration), list);
+                }
             }
             catch (Exception ex)
             {
@@ -800,16 +853,24 @@ namespace Resono.Plugin.Filters
 
         private async Task<List<BaseItemDto>> FetchArtistTopTracksAsync(ResonoItemCache.Entry artistEntry, CancellationToken ct)
         {
+            var cacheKey = !string.IsNullOrEmpty(artistEntry.SpotifyId) ? artistEntry.SpotifyId : (artistEntry.Name ?? "");
+            if (!string.IsNullOrEmpty(cacheKey) && _artistTopTracksCache.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow < cached.Expires)
+            {
+                return cached.Items;
+            }
+
             var list = new List<BaseItemDto>();
             var cfg = Plugin.Instance!.Configuration;
             var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
             var client = _httpClientFactory.CreateClient();
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var fetchToken = timeoutCts.Token;
 
             if (string.IsNullOrWhiteSpace(artistEntry.Name) && !string.IsNullOrEmpty(artistEntry.SpotifyId))
             {
                 try
                 {
-                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(artistEntry.SpotifyId)}", ct).ConfigureAwait(false);
+                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(artistEntry.SpotifyId)}", fetchToken).ConfigureAwait(false);
                     if (art != null && !string.IsNullOrEmpty(art.Name))
                     {
                         artistEntry.Name = art.Name;
@@ -826,7 +887,7 @@ namespace Resono.Plugin.Filters
             {
                 var idParam = !string.IsNullOrEmpty(artistEntry.SpotifyId) ? artistEntry.SpotifyId : artistEntry.Name;
                 var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam ?? "")}/top?name={Uri.EscapeDataString(artistEntry.Name ?? "")}";
-                var res = await client.GetFromJsonAsync<GatewayArtistTopResponse>(url, ct).ConfigureAwait(false);
+                var res = await client.GetFromJsonAsync<GatewayArtistTopResponse>(url, fetchToken).ConfigureAwait(false);
                 if (res?.Tracks != null && res.Tracks.Count > 0)
                 {
                     foreach (var t in res.Tracks)
@@ -880,7 +941,7 @@ namespace Resono.Plugin.Filters
                 else
                 {
                     var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(artistEntry.Name ?? "")}&limit=15";
-                    var searchData = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, ct).ConfigureAwait(false);
+                    var searchData = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, fetchToken).ConfigureAwait(false);
                     if (searchData?.Tracks != null)
                     {
                         foreach (var t in searchData.Tracks)
@@ -931,6 +992,11 @@ namespace Resono.Plugin.Filters
                         }
                     }
                 }
+
+                if (list.Count > 0 && !string.IsNullOrEmpty(cacheKey))
+                {
+                    _artistTopTracksCache[cacheKey] = (DateTime.UtcNow.Add(MetadataCacheDuration), list);
+                }
             }
             catch (Exception ex)
             {
@@ -951,7 +1017,8 @@ namespace Resono.Plugin.Filters
                 var url = $"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam ?? "")}/similar?name={Uri.EscapeDataString(artistEntry.Name ?? "")}";
 
                 var client = _httpClientFactory.CreateClient();
-                var res = await client.GetFromJsonAsync<GatewayArtistSimilarResponse>(url, ct).ConfigureAwait(false);
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var res = await client.GetFromJsonAsync<GatewayArtistSimilarResponse>(url, timeoutCts.Token).ConfigureAwait(false);
                 if (res?.Artists != null)
                 {
                     foreach (var a in res.Artists)
@@ -966,6 +1033,10 @@ namespace Resono.Plugin.Filters
                             Id = id
                         };
                         _cache.Set(id, entry);
+                        if (!string.IsNullOrEmpty(a.Name))
+                        {
+                            _registrar.RegisterArtist(id, a.Name);
+                        }
                         list.Add(ResonoSearchActionFilter.BuildArtistDto(id, entry));
                     }
                 }
@@ -979,6 +1050,11 @@ namespace Resono.Plugin.Filters
 
         private async Task<List<BaseItemDto>> FetchChartTracksAsync(string chartId, CancellationToken ct)
         {
+            if (_chartTracksCache.TryGetValue(chartId, out var cached) && DateTime.UtcNow < cached.Expires)
+            {
+                return cached.Items;
+            }
+
             var list = new List<BaseItemDto>();
             try
             {
@@ -987,7 +1063,8 @@ namespace Resono.Plugin.Filters
                 var url = $"{gatewayUrl}/jellyfin/charts/{Uri.EscapeDataString(chartId)}/tracks";
 
                 var client = _httpClientFactory.CreateClient();
-                var res = await client.GetFromJsonAsync<GatewayArtistTopResponse>(url, ct).ConfigureAwait(false);
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var res = await client.GetFromJsonAsync<GatewayArtistTopResponse>(url, timeoutCts.Token).ConfigureAwait(false);
                 if (res?.Tracks != null)
                 {
                     foreach (var t in res.Tracks)
@@ -1017,6 +1094,7 @@ namespace Resono.Plugin.Filters
                                     ArtistId = artistId
                                 });
                             }
+                            _registrar.RegisterAlbum(albumId.Value, t.AlbumName, t.ArtistName);
                         }
 
                         if (artistId.HasValue && !string.IsNullOrEmpty(t.ArtistName))
@@ -1032,6 +1110,7 @@ namespace Resono.Plugin.Filters
                                     Id = artistId.Value
                                 });
                             }
+                            _registrar.RegisterArtist(artistId.Value, t.ArtistName);
                         }
 
                         var streamUrl = !string.IsNullOrEmpty(t.StreamUrl) ? $"{gatewayUrl}{t.StreamUrl}" : $"{gatewayUrl}/playback/{t.Id}";
@@ -1056,6 +1135,11 @@ namespace Resono.Plugin.Filters
                         list.Add(ResonoSearchActionFilter.BuildTrackDto(trackId, entry));
                     }
                 }
+
+                if (list.Count > 0)
+                {
+                    _chartTracksCache[chartId] = (DateTime.UtcNow.Add(MetadataCacheDuration), list);
+                }
             }
             catch (Exception ex)
             {
@@ -1066,18 +1150,25 @@ namespace Resono.Plugin.Filters
 
         private async Task<List<BaseItemDto>?> FetchAlbumTracksAsync(ResonoItemCache.Entry albumEntry, CancellationToken ct)
         {
+            if (_albumTracksCache.TryGetValue(albumEntry.Id, out var cached) && DateTime.UtcNow < cached.Expires)
+            {
+                return cached.Items;
+            }
+
             try
             {
                 var cfg = Plugin.Instance!.Configuration;
                 var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var client = _httpClientFactory.CreateClient();
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var fetchToken = timeoutCts.Token;
 
                 string? albumIdParam = albumEntry.SpotifyId;
                 if (string.IsNullOrEmpty(albumIdParam) && !string.IsNullOrEmpty(albumEntry.Name))
                 {
                     var query = $"{albumEntry.ArtistName} {albumEntry.Name}".Trim();
                     var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(query)}&limit=5";
-                    var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, ct).ConfigureAwait(false);
+                    var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, fetchToken).ConfigureAwait(false);
                     var matched = searchRes?.Albums?.FirstOrDefault(a =>
                         string.Equals(a.Name, albumEntry.Name, StringComparison.OrdinalIgnoreCase));
                     if (matched != null && !string.IsNullOrEmpty(matched.Id))
@@ -1090,7 +1181,7 @@ namespace Resono.Plugin.Filters
                 if (string.IsNullOrEmpty(albumIdParam)) return null;
 
                 var url = $"{gatewayUrl}/jellyfin/album/{Uri.EscapeDataString(albumIdParam)}";
-                var albumData = await client.GetFromJsonAsync<GatewayAlbumResponse>(url, ct).ConfigureAwait(false);
+                var albumData = await client.GetFromJsonAsync<GatewayAlbumResponse>(url, fetchToken).ConfigureAwait(false);
                 if (albumData?.Tracks == null) return null;
 
                 var result = new List<BaseItemDto>();
@@ -1124,6 +1215,12 @@ namespace Resono.Plugin.Filters
 
                     result.Add(ResonoSearchActionFilter.BuildTrackDto(trackId, entry));
                 }
+
+                if (result.Count > 0)
+                {
+                    _albumTracksCache[albumEntry.Id] = (DateTime.UtcNow.Add(MetadataCacheDuration), result);
+                }
+
                 return result;
             }
             catch (Exception ex)
@@ -1140,11 +1237,13 @@ namespace Resono.Plugin.Filters
                 var cfg = Plugin.Instance?.Configuration;
                 var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
                 var client = _httpClientFactory.CreateClient();
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var fetchToken = timeoutCts.Token;
 
                 // 1. Try resolving as track
                 try
                 {
-                    var track = await client.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{id:N}", ct).ConfigureAwait(false);
+                    var track = await client.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{id:N}", fetchToken).ConfigureAwait(false);
                     if (track != null && !string.IsNullOrEmpty(track.Name))
                     {
                         var albId = !string.IsNullOrEmpty(track.AlbumId) ? ResonoItemCache.StubGuid("dz-album", track.AlbumId) : (Guid?)null;
@@ -1166,6 +1265,7 @@ namespace Resono.Plugin.Filters
                             ArtistId = artId
                         };
                         _cache.Set(id, entry);
+                        _registrar.RegisterTrack(id, entry);
                         return entry;
                     }
                 }
@@ -1174,7 +1274,7 @@ namespace Resono.Plugin.Filters
                 // 2. Try resolving as album
                 try
                 {
-                    var alb = await client.GetFromJsonAsync<GatewayAlbumResponse>($"{gatewayUrl}/jellyfin/album/{id:N}", ct).ConfigureAwait(false);
+                    var alb = await client.GetFromJsonAsync<GatewayAlbumResponse>($"{gatewayUrl}/jellyfin/album/{id:N}", fetchToken).ConfigureAwait(false);
                     if (alb != null && !string.IsNullOrEmpty(alb.Name))
                     {
                         var artId = !string.IsNullOrEmpty(alb.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", alb.ArtistName) : (Guid?)null;
@@ -1188,6 +1288,7 @@ namespace Resono.Plugin.Filters
                             ArtistId = artId
                         };
                         _cache.Set(id, entry);
+                        _registrar.RegisterAlbum(id, alb.Name, alb.ArtistName);
                         return entry;
                     }
                 }
@@ -1196,7 +1297,7 @@ namespace Resono.Plugin.Filters
                 // 3. Try resolving as artist
                 try
                 {
-                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{id:N}", ct).ConfigureAwait(false);
+                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{id:N}", fetchToken).ConfigureAwait(false);
                     if (art != null && !string.IsNullOrEmpty(art.Name))
                     {
                         var entry = new ResonoItemCache.Entry
@@ -1208,6 +1309,7 @@ namespace Resono.Plugin.Filters
                             Id = id
                         };
                         _cache.Set(id, entry);
+                        _registrar.RegisterArtist(id, art.Name);
                         return entry;
                     }
                 }

@@ -26,6 +26,8 @@ namespace Resono.Plugin.Filters
     {
         private static readonly ConcurrentDictionary<string, (DateTime Expires, GatewaySearchResponse Data)> _searchMemoryCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, Lazy<Task<GatewaySearchResponse?>>> _inFlightSearches = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, List<GatewayTrack> Tracks)> _chartTracksListCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Charts)> _chartsCache = new(StringComparer.OrdinalIgnoreCase);
         private static string? _cachedEffectiveGatewayUrl;
 
         public static string GetEffectiveGatewayUrl(string? configured)
@@ -358,6 +360,7 @@ namespace Resono.Plugin.Filters
                                 ArtistId = artistId
                             });
                         }
+                        _registrar.RegisterAlbum(albumId.Value, t.AlbumName, t.ArtistName);
                     }
 
                     // Ensure Artist is cached with image
@@ -374,6 +377,7 @@ namespace Resono.Plugin.Filters
                                 Id = artistId.Value
                             });
                         }
+                        _registrar.RegisterArtist(artistId.Value, t.ArtistName);
                     }
 
                     if (existingIds.Add(id))
@@ -432,6 +436,10 @@ namespace Resono.Plugin.Filters
                         ImageUrl = a.ImageUrl
                     };
                     _cache.Set(id, entry);
+                    if (!string.IsNullOrEmpty(a.Name))
+                    {
+                        _registrar.RegisterArtist(id, a.Name);
+                    }
 
                     if (existingIds.Add(id))
                     {
@@ -469,6 +477,10 @@ namespace Resono.Plugin.Filters
                         ArtistId = artistId
                     };
                     _cache.Set(id, entry);
+                    if (!string.IsNullOrEmpty(al.Name))
+                    {
+                        _registrar.RegisterAlbum(id, al.Name, al.ArtistName);
+                    }
 
                     if (existingIds.Add(id))
                     {
@@ -824,6 +836,11 @@ namespace Resono.Plugin.Filters
 
         public async Task<List<GatewayTrack>> FetchChartTrackListAsync(string chartId, CancellationToken ct)
         {
+            if (_chartTracksListCache.TryGetValue(chartId, out var cached) && DateTime.UtcNow < cached.Expires)
+            {
+                return cached.Tracks;
+            }
+
             var list = new List<GatewayTrack>();
             try
             {
@@ -832,10 +849,13 @@ namespace Resono.Plugin.Filters
                 var url = $"{gatewayUrl}/jellyfin/charts/{Uri.EscapeDataString(chartId)}/tracks";
 
                 var client = _httpClientFactory.CreateClient();
-                var res = await client.GetFromJsonAsync<GatewayArtistTopResponse>(url, ct).ConfigureAwait(false);
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var res = await client.GetFromJsonAsync<GatewayArtistTopResponse>(url, timeoutCts.Token).ConfigureAwait(false);
                 if (res?.Tracks != null)
                 {
-                    return res.Tracks;
+                    list = res.Tracks;
+                    _chartTracksListCache[chartId] = (DateTime.UtcNow.AddMinutes(15), list);
+                    return list;
                 }
             }
             catch (Exception ex)
@@ -847,16 +867,22 @@ namespace Resono.Plugin.Filters
 
         public async Task<List<BaseItemDto>> FetchChartsAsync(CancellationToken ct)
         {
+            var cfg = Plugin.Instance!.Configuration;
+            var country = !string.IsNullOrWhiteSpace(cfg.ChartCountryCode) ? cfg.ChartCountryCode : "PE";
+            if (_chartsCache.TryGetValue(country, out var cached) && DateTime.UtcNow < cached.Expires)
+            {
+                return cached.Charts;
+            }
+
             var list = new List<BaseItemDto>();
             try
             {
-                var cfg = Plugin.Instance!.Configuration;
                 var gatewayUrl = GetEffectiveGatewayUrl(cfg.GatewayUrl);
-                var country = !string.IsNullOrWhiteSpace(cfg.ChartCountryCode) ? cfg.ChartCountryCode : "PE";
                 var url = $"{gatewayUrl}/jellyfin/charts?country={Uri.EscapeDataString(country)}";
 
                 var client = _httpClientFactory.CreateClient();
-                var data = await client.GetFromJsonAsync<GatewayChartsResponse>(url, ct).ConfigureAwait(false);
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var data = await client.GetFromJsonAsync<GatewayChartsResponse>(url, timeoutCts.Token).ConfigureAwait(false);
                 if (data?.Charts != null)
                 {
                     foreach (var c in data.Charts)
@@ -871,6 +897,10 @@ namespace Resono.Plugin.Filters
                         };
                         _cache.Set(chartId, entry);
                         list.Add(BuildPlaylistDto(chartId, entry));
+                    }
+                    if (list.Count > 0)
+                    {
+                        _chartsCache[country] = (DateTime.UtcNow.AddMinutes(15), list);
                     }
                 }
             }

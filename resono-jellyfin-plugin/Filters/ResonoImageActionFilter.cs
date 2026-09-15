@@ -133,7 +133,8 @@ namespace Resono.Plugin.Filters
                     var cfg = Plugin.Instance?.Configuration;
                     var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
                     var client = _httpClientFactory.CreateClient();
-                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(artistName)}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(artistName)}", timeoutCts.Token).ConfigureAwait(false);
                     if (art != null && !string.IsNullOrEmpty(art.ImageUrl))
                     {
                         var artId = ResonoItemCache.StubGuid("dz-artist", artistName);
@@ -146,6 +147,7 @@ namespace Resono.Plugin.Filters
                             Id = artId
                         };
                         _cache.Set(artId, artEntry);
+                        _registrar.RegisterArtist(artId, artistName);
                     }
                 }
 
@@ -177,6 +179,8 @@ namespace Resono.Plugin.Filters
             var cfg = Plugin.Instance?.Configuration;
             var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
             var client = _httpClientFactory.CreateClient();
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var fetchToken = timeoutCts.Token;
 
             // 1.5 Fallback to Jellyfin LibraryManager if item was registered in library
             if (entry == null || string.IsNullOrEmpty(entry.ImageUrl))
@@ -187,7 +191,7 @@ namespace Resono.Plugin.Filters
                     if (libItem is MediaBrowser.Controller.Entities.Audio.MusicAlbum albItem && !string.IsNullOrEmpty(albItem.Name))
                     {
                         var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(albItem.Name)}&limit=3";
-                        var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, fetchToken).ConfigureAwait(false);
                         var match = searchRes?.Albums?.FirstOrDefault(a => string.Equals(a.Name, albItem.Name, StringComparison.OrdinalIgnoreCase)) ?? searchRes?.Albums?.FirstOrDefault();
                         if (match != null && !string.IsNullOrEmpty(match.ImageUrl))
                         {
@@ -200,6 +204,7 @@ namespace Resono.Plugin.Filters
                                 ImageUrl = match.ImageUrl
                             };
                             _cache.Set(itemId, entry);
+                            _registrar.RegisterAlbum(itemId, albItem.Name, entry.ArtistName);
                             _logger.LogInformation("[Resono] Resolved artwork for library album '{Album}' ({Id}) via search", albItem.Name, itemId);
                             return await FetchImageBytesOrRedirectAsync(match.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
                         }
@@ -207,7 +212,7 @@ namespace Resono.Plugin.Filters
                     else if (libItem is MediaBrowser.Controller.Entities.Audio.Audio audioItem && !string.IsNullOrEmpty(audioItem.Name))
                     {
                         var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(audioItem.Name)}&limit=3";
-                        var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, fetchToken).ConfigureAwait(false);
                         var match = searchRes?.Tracks?.FirstOrDefault(t => string.Equals(t.Name, audioItem.Name, StringComparison.OrdinalIgnoreCase)) ?? searchRes?.Tracks?.FirstOrDefault();
                         if (match != null && !string.IsNullOrEmpty(match.ImageUrl))
                         {
@@ -221,6 +226,7 @@ namespace Resono.Plugin.Filters
                                 ImageUrl = match.ImageUrl
                             };
                             _cache.Set(itemId, entry);
+                            _registrar.RegisterTrack(itemId, entry);
                             _logger.LogInformation("[Resono] Resolved artwork for library audio '{Track}' ({Id}) via search", audioItem.Name, itemId);
                             return await FetchImageBytesOrRedirectAsync(match.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
                         }
@@ -235,11 +241,12 @@ namespace Resono.Plugin.Filters
                 try
                 {
                     var idParam = !string.IsNullOrEmpty(entry.SpotifyId) ? entry.SpotifyId : entry.Name;
-                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam)}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam)}", fetchToken).ConfigureAwait(false);
                     if (art != null && !string.IsNullOrEmpty(art.ImageUrl))
                     {
                         entry.ImageUrl = art.ImageUrl;
                         _cache.Set(itemId, entry);
+                        _registrar.RegisterArtist(itemId, entry.Name);
                         _logger.LogInformation("[Resono] Resolved dynamic artist artwork for '{Artist}'", entry.Name);
                         return await FetchImageBytesOrRedirectAsync(entry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
                     }
@@ -252,7 +259,7 @@ namespace Resono.Plugin.Filters
             {
                 try
                 {
-                    var alb = await client.GetFromJsonAsync<GatewayAlbumResponse>($"{gatewayUrl}/jellyfin/album/{itemId:N}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                    var alb = await client.GetFromJsonAsync<GatewayAlbumResponse>($"{gatewayUrl}/jellyfin/album/{itemId:N}", fetchToken).ConfigureAwait(false);
                     if (alb != null && !string.IsNullOrEmpty(alb.ImageUrl))
                     {
                         if (entry == null)
@@ -268,6 +275,7 @@ namespace Resono.Plugin.Filters
                                 ArtistId = artId
                             };
                             _cache.Set(itemId, entry);
+                            _registrar.RegisterAlbum(itemId, alb.Name, alb.ArtistName);
                         }
                         else
                         {
@@ -286,7 +294,7 @@ namespace Resono.Plugin.Filters
             {
                 try
                 {
-                    var track = await client.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{itemId:N}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                    var track = await client.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{itemId:N}", fetchToken).ConfigureAwait(false);
                     if (track != null && !string.IsNullOrEmpty(track.ImageUrl))
                     {
                         if (entry == null)
@@ -305,6 +313,7 @@ namespace Resono.Plugin.Filters
                                 ArtistId = artId
                             };
                             _cache.Set(itemId, entry);
+                            _registrar.RegisterTrack(itemId, entry);
                         }
                         else
                         {
@@ -334,8 +343,7 @@ namespace Resono.Plugin.Filters
             try
             {
                 var client = _httpClientFactory.CreateClient();
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(httpContext.RequestAborted);
-                cts.CancelAfter(TimeSpan.FromSeconds(6));
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
                 var resp = await client.GetAsync(imageUrl, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
                 if (resp.IsSuccessStatusCode)

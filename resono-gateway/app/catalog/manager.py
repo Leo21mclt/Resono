@@ -168,6 +168,45 @@ class CatalogManager:
             res = await prov.get_album(album_id)
             if res:
                 return res
+
+        # Try SQLite database lookup for canonical UUID or ID
+        try:
+            from app.db.database import AsyncSessionLocal
+            from app.db.models import Album, Track
+            from sqlalchemy import select
+            from sqlalchemy.orm import selectinload
+            async with AsyncSessionLocal() as session:
+                stmt = select(Album).options(selectinload(Album.artist), selectinload(Album.tracks)).where((Album.id == album_id) | (Album.spotify_id == album_id))
+                db_res = await session.execute(stmt)
+                al = db_res.scalar_one_or_none()
+                if al:
+                    artist_name = al.artist.name if al.artist else ""
+                    cat_album = CatalogAlbum(
+                        id=al.id,
+                        title=al.title,
+                        artist_name=artist_name,
+                        artist_id=al.artist_id,
+                        release_date=al.release_date or "",
+                        artwork_url=al.artwork_url or ""
+                    )
+                    cat_tracks = [
+                        CatalogTrack(
+                            id=t.id,
+                            title=t.title,
+                            artist_name=artist_name,
+                            album_title=al.title,
+                            album_id=al.id,
+                            duration_ms=t.duration_ms,
+                            track_number=t.track_number,
+                            disc_number=t.disc_number,
+                            artwork_url=al.artwork_url or ""
+                        )
+                        for t in (al.tracks or [])
+                    ]
+                    return cat_album, cat_tracks
+        except Exception:
+            pass
+
         return None
 
     async def get_track(self, track_id: str) -> CatalogTrack | None:
