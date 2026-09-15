@@ -19,17 +19,20 @@ namespace Resono.Plugin.Filters
         private readonly ResonoItemCache _cache;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly MediaBrowser.Controller.Library.ILibraryManager _libraryManager;
+        private readonly ResonoLibraryRegistrar _registrar;
         private readonly ILogger<ResonoImageActionFilter> _logger;
 
         public ResonoImageActionFilter(
             ResonoItemCache cache,
             IHttpClientFactory httpClientFactory,
             MediaBrowser.Controller.Library.ILibraryManager libraryManager,
+            ResonoLibraryRegistrar registrar,
             ILogger<ResonoImageActionFilter> logger)
         {
             _cache = cache;
             _httpClientFactory = httpClientFactory;
             _libraryManager = libraryManager;
+            _registrar = registrar;
             _logger = logger;
         }
 
