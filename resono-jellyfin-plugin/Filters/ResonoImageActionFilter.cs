@@ -33,8 +33,7 @@ namespace Resono.Plugin.Filters
                 var route = ctx.RouteData.Values;
                 var controller = route.TryGetValue("controller", out var c) ? c?.ToString() : null;
 
-                bool isImageRoute = path.IndexOf("/Images/", StringComparison.OrdinalIgnoreCase) >= 0
-                    || path.IndexOf("/Images", StringComparison.OrdinalIgnoreCase) >= 0
+                bool isImageRoute = path.IndexOf("/Images", StringComparison.OrdinalIgnoreCase) >= 0
                     || string.Equals(controller, "Image", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(controller, "Images", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(controller, "ItemImage", StringComparison.OrdinalIgnoreCase);
@@ -74,12 +73,12 @@ namespace Resono.Plugin.Filters
                     {
                         if (!string.IsNullOrEmpty(entry.ImageUrl))
                         {
-                            var imgRes = await ProxyImageAsync(entry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
-                            if (imgRes != null)
-                            {
-                                ctx.Result = imgRes;
-                                return;
-                            }
+                            // Short-circuit with HTTP 302 redirect directly to the upstream CDN.
+                            // This allows iOS AVPlayer/UIImageView/Kingfisher/SDWebImage
+                            // to download and cache images natively with zero Kestrel chunking overhead.
+                            _logger.LogDebug("[Resono] Image redirect for {Id} -> {Url}", itemId, entry.ImageUrl);
+                            ctx.Result = new RedirectResult(entry.ImageUrl, permanent: false);
+                            return;
                         }
 
                         // Dynamic artwork resolution for artists with missing image URL
@@ -96,49 +95,21 @@ namespace Resono.Plugin.Filters
                                 {
                                     entry.ImageUrl = art.ImageUrl;
                                     _cache.Set(itemId, entry);
-                                    var imgRes = await ProxyImageAsync(entry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
-                                    if (imgRes != null)
-                                    {
-                                        ctx.Result = imgRes;
-                                        return;
-                                    }
+                                    ctx.Result = new RedirectResult(entry.ImageUrl, permanent: false);
+                                    return;
                                 }
                             }
-                            catch (Exception ex)
-                            {
-                                _logger.LogDebug(ex, "Dynamic artist art resolution failed for {Name}", entry.Name);
-                            }
+                            catch { }
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Resono image filter passthrough: {Message}", ex.Message);
+                _logger.LogDebug(ex, "[Resono] Image filter passthrough on exception: {Message}", ex.Message);
             }
 
             await next().ConfigureAwait(false);
-        }
-
-        private async Task<IActionResult?> ProxyImageAsync(string imageUrl, Microsoft.AspNetCore.Http.HttpContext httpContext)
-        {
-            try
-            {
-                var client = _httpClientFactory.CreateClient();
-                var resp = await client.GetAsync(imageUrl, HttpCompletionOption.ResponseHeadersRead, httpContext.RequestAborted).ConfigureAwait(false);
-                if (resp.IsSuccessStatusCode)
-                {
-                    var contentType = resp.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
-                    var stream = await resp.Content.ReadAsStreamAsync(httpContext.RequestAborted).ConfigureAwait(false);
-                    httpContext.Response.Headers["Cache-Control"] = "public, max-age=604800, immutable";
-                    return new FileStreamResult(stream, contentType);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Direct image streaming failed for {Url}: {Message}", imageUrl, ex.Message);
-            }
-            return new RedirectResult(imageUrl);
         }
     }
 }

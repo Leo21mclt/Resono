@@ -1,4 +1,5 @@
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,6 +17,8 @@ namespace Resono.Plugin
             services.AddHttpClient();
             services.AddSingleton<ResonoItemCache>();
             services.AddSingleton<ResonoLibraryRegistrar>();
+            services.AddSingleton<ResonoRecentlyPlayedTracker>();
+            services.AddSingleton<IMediaSourceProvider, ResonoMediaSourceProvider>();
 
             services.Configure<MvcOptions>(opts =>
             {
