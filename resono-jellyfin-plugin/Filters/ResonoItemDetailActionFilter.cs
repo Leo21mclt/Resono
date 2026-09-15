@@ -286,17 +286,27 @@ namespace Resono.Plugin.Filters
             }
 
             // 5. Single-Item Detail (/Items/{id}, /Users/{u}/Items/{id}, /Playlists/{id})
-            if (TryExtractSingleItemId(ctx, out var singleId) && _cache.TryGet(singleId, out var singleEntry) && singleEntry != null)
+            if (TryExtractSingleItemId(ctx, out var singleId))
             {
-                BaseItemDto dto = singleEntry.Kind switch
+                _cache.TryGet(singleId, out var singleEntry);
+                if (singleEntry == null)
                 {
-                    "artist" => ResonoSearchActionFilter.BuildArtistDto(singleId, singleEntry),
-                    "album" => ResonoSearchActionFilter.BuildAlbumDto(singleId, singleEntry),
-                    "playlist" => ResonoSearchActionFilter.BuildPlaylistDto(singleId, singleEntry),
-                    _ => ResonoSearchActionFilter.BuildTrackDto(singleId, singleEntry)
-                };
-                ctx.Result = new OkObjectResult(dto);
-                return;
+                    singleEntry = await TryResolveItemFromGatewayAsync(singleId, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                }
+
+                if (singleEntry != null)
+                {
+                    _logger.LogInformation("[Resono] Serving Single-Item Detail for {Id} ({Kind}: '{Name}')", singleId, singleEntry.Kind, singleEntry.Name);
+                    BaseItemDto dto = singleEntry.Kind switch
+                    {
+                        "artist" => ResonoSearchActionFilter.BuildArtistDto(singleId, singleEntry),
+                        "album" => ResonoSearchActionFilter.BuildAlbumDto(singleId, singleEntry),
+                        "playlist" => ResonoSearchActionFilter.BuildPlaylistDto(singleId, singleEntry),
+                        _ => ResonoSearchActionFilter.BuildTrackDto(singleId, singleEntry)
+                    };
+                    ctx.Result = new OkObjectResult(dto);
+                    return;
+                }
             }
 
             // 6. Virtual Playlist Tracks (/Playlists/{id}/Items)
@@ -1121,6 +1131,94 @@ namespace Resono.Plugin.Filters
             }
         }
 
+        private async Task<ResonoItemCache.Entry?> TryResolveItemFromGatewayAsync(Guid id, CancellationToken ct)
+        {
+            try
+            {
+                var cfg = Plugin.Instance?.Configuration;
+                var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
+                var client = _httpClientFactory.CreateClient();
+
+                // 1. Try resolving as track
+                try
+                {
+                    var track = await client.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{id:N}", ct).ConfigureAwait(false);
+                    if (track != null && !string.IsNullOrEmpty(track.Name))
+                    {
+                        var albId = !string.IsNullOrEmpty(track.AlbumId) ? ResonoItemCache.StubGuid("dz-album", track.AlbumId) : (Guid?)null;
+                        var artId = !string.IsNullOrEmpty(track.ArtistId) ? ResonoItemCache.StubGuid("dz-artist", track.ArtistId) : (Guid?)null;
+                        var entry = new ResonoItemCache.Entry
+                        {
+                            Kind = "track",
+                            Name = track.Name,
+                            ArtistName = track.ArtistName,
+                            AlbumName = track.AlbumName,
+                            SpotifyId = track.Id,
+                            CanonicalId = track.CanonicalId,
+                            ImageUrl = track.ImageUrl,
+                            DurationMs = track.DurationMs,
+                            TrackNumber = track.TrackNumber,
+                            DiscNumber = track.DiscNumber,
+                            StreamUrl = !string.IsNullOrEmpty(track.StreamUrl) ? $"{gatewayUrl}{track.StreamUrl}" : $"{gatewayUrl}/playback/{track.Id}",
+                            AlbumId = albId,
+                            ArtistId = artId
+                        };
+                        _cache.Set(id, entry);
+                        return entry;
+                    }
+                }
+                catch { }
+
+                // 2. Try resolving as album
+                try
+                {
+                    var alb = await client.GetFromJsonAsync<GatewayAlbumResponse>($"{gatewayUrl}/jellyfin/album/{id:N}", ct).ConfigureAwait(false);
+                    if (alb != null && !string.IsNullOrEmpty(alb.Name))
+                    {
+                        var artId = !string.IsNullOrEmpty(alb.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", alb.ArtistName) : (Guid?)null;
+                        var entry = new ResonoItemCache.Entry
+                        {
+                            Kind = "album",
+                            Name = alb.Name,
+                            ArtistName = alb.ArtistName,
+                            SpotifyId = alb.Id,
+                            ImageUrl = alb.ImageUrl,
+                            ArtistId = artId
+                        };
+                        _cache.Set(id, entry);
+                        return entry;
+                    }
+                }
+                catch { }
+
+                // 3. Try resolving as artist
+                try
+                {
+                    var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{id:N}", ct).ConfigureAwait(false);
+                    if (art != null && !string.IsNullOrEmpty(art.Name))
+                    {
+                        var entry = new ResonoItemCache.Entry
+                        {
+                            Kind = "artist",
+                            Name = art.Name,
+                            SpotifyId = art.Id,
+                            ImageUrl = art.ImageUrl,
+                            Id = id
+                        };
+                        _cache.Set(id, entry);
+                        return entry;
+                    }
+                }
+                catch { }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[Resono] Dynamic item resolve failed for {Id}: {Msg}", id, ex.Message);
+            }
+
+            return null;
+        }
+
         private async Task<LyricDto?> FetchSyncedLyricsAsync(ResonoItemCache.Entry trackEntry, CancellationToken ct)
         {
             try
@@ -1204,6 +1302,12 @@ namespace Resono.Plugin.Filters
         public string? Id { get; set; }
         [JsonPropertyName("name")]
         public string? Name { get; set; }
+        [JsonPropertyName("artistName")]
+        public string? ArtistName { get; set; }
+        [JsonPropertyName("artistId")]
+        public string? ArtistId { get; set; }
+        [JsonPropertyName("imageUrl")]
+        public string? ImageUrl { get; set; }
         [JsonPropertyName("tracks")]
         public List<GatewayTrack>? Tracks { get; set; }
     }

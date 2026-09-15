@@ -104,6 +104,7 @@ namespace Resono.Plugin.Filters
 
                 if (idStr is not null && Guid.TryParse(idStr, out var itemId))
                 {
+                    _logger.LogInformation("[Resono] Received image request for ItemId: {Id} (Route: {Path})", itemId, path);
                     var itemResult = await ServeItemImageByIdAsync(ctx, itemId).ConfigureAwait(false);
                     if (itemResult != null)
                     {
@@ -114,7 +115,7 @@ namespace Resono.Plugin.Filters
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "[Resono] Image filter passthrough on exception: {Message}", ex.Message);
+                _logger.LogWarning(ex, "[Resono] Image filter error on request: {Message}", ex.Message);
             }
 
             await next().ConfigureAwait(false);
@@ -147,6 +148,7 @@ namespace Resono.Plugin.Filters
 
                 if (artEntry != null && !string.IsNullOrEmpty(artEntry.ImageUrl))
                 {
+                    _logger.LogInformation("[Resono] Serving artist image by name for '{Artist}'", artistName);
                     return await FetchImageBytesOrRedirectAsync(artEntry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
                 }
             }
@@ -160,28 +162,103 @@ namespace Resono.Plugin.Filters
 
         private async Task<IActionResult?> ServeItemImageByIdAsync(ActionExecutingContext ctx, Guid itemId)
         {
-            if (!_cache.TryGet(itemId, out var entry) || entry == null) return null;
+            _cache.TryGet(itemId, out var entry);
 
-            if (!string.IsNullOrEmpty(entry.ImageUrl))
+            // 1. Direct hit in cache with valid ImageUrl
+            if (entry != null && !string.IsNullOrEmpty(entry.ImageUrl))
             {
+                _logger.LogInformation("[Resono] Serving image for known item {Id} ({Kind}: '{Name}')", itemId, entry.Kind, entry.Name);
                 return await FetchImageBytesOrRedirectAsync(entry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
             }
 
-            // Dynamic artwork resolution for artists with missing image URL
-            if (entry.Kind == "artist" && !string.IsNullOrEmpty(entry.Name))
+            var cfg = Plugin.Instance?.Configuration;
+            var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
+            var client = _httpClientFactory.CreateClient();
+
+            // 2. Dynamic artwork resolution for artists
+            if (entry != null && entry.Kind == "artist" && !string.IsNullOrEmpty(entry.Name))
             {
                 try
                 {
-                    var cfg = Plugin.Instance?.Configuration;
-                    var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
-                    var client = _httpClientFactory.CreateClient();
                     var idParam = !string.IsNullOrEmpty(entry.SpotifyId) ? entry.SpotifyId : entry.Name;
                     var art = await client.GetFromJsonAsync<GatewayArtist>($"{gatewayUrl}/jellyfin/artist/{Uri.EscapeDataString(idParam)}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                     if (art != null && !string.IsNullOrEmpty(art.ImageUrl))
                     {
                         entry.ImageUrl = art.ImageUrl;
                         _cache.Set(itemId, entry);
+                        _logger.LogInformation("[Resono] Resolved dynamic artist artwork for '{Artist}'", entry.Name);
                         return await FetchImageBytesOrRedirectAsync(entry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
+                    }
+                }
+                catch { }
+            }
+
+            // 3. Dynamic artwork resolution for albums (missing from cache or missing ImageUrl)
+            if (entry == null || entry.Kind == "album")
+            {
+                try
+                {
+                    var alb = await client.GetFromJsonAsync<GatewayAlbumResponse>($"{gatewayUrl}/jellyfin/album/{itemId:N}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                    if (alb != null && !string.IsNullOrEmpty(alb.ImageUrl))
+                    {
+                        if (entry == null)
+                        {
+                            var artId = !string.IsNullOrEmpty(alb.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", alb.ArtistName) : (Guid?)null;
+                            entry = new ResonoItemCache.Entry
+                            {
+                                Kind = "album",
+                                Name = alb.Name,
+                                ArtistName = alb.ArtistName,
+                                SpotifyId = alb.Id,
+                                ImageUrl = alb.ImageUrl,
+                                ArtistId = artId
+                            };
+                            _cache.Set(itemId, entry);
+                        }
+                        else
+                        {
+                            entry.ImageUrl = alb.ImageUrl;
+                            _cache.Set(itemId, entry);
+                        }
+                        _logger.LogInformation("[Resono] Resolved dynamic album artwork for '{Album}' ({Id})", alb.Name, itemId);
+                        return await FetchImageBytesOrRedirectAsync(alb.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
+                    }
+                }
+                catch { }
+            }
+
+            // 4. Dynamic artwork resolution for tracks (missing from cache or missing ImageUrl)
+            if (entry == null || entry.Kind == "track")
+            {
+                try
+                {
+                    var track = await client.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{itemId:N}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                    if (track != null && !string.IsNullOrEmpty(track.ImageUrl))
+                    {
+                        if (entry == null)
+                        {
+                            var albId = !string.IsNullOrEmpty(track.AlbumId) ? ResonoItemCache.StubGuid("dz-album", track.AlbumId) : (Guid?)null;
+                            var artId = !string.IsNullOrEmpty(track.ArtistId) ? ResonoItemCache.StubGuid("dz-artist", track.ArtistId) : (Guid?)null;
+                            entry = new ResonoItemCache.Entry
+                            {
+                                Kind = "track",
+                                Name = track.Name,
+                                ArtistName = track.ArtistName,
+                                AlbumName = track.AlbumName,
+                                SpotifyId = track.Id,
+                                ImageUrl = track.ImageUrl,
+                                AlbumId = albId,
+                                ArtistId = artId
+                            };
+                            _cache.Set(itemId, entry);
+                        }
+                        else
+                        {
+                            entry.ImageUrl = track.ImageUrl;
+                            _cache.Set(itemId, entry);
+                        }
+                        _logger.LogInformation("[Resono] Resolved dynamic track artwork for '{Track}' ({Id})", track.Name, itemId);
+                        return await FetchImageBytesOrRedirectAsync(track.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
                     }
                 }
                 catch { }
@@ -196,6 +273,7 @@ namespace Resono.Plugin.Filters
             if (_imageCache.TryGetValue(imageUrl, out var cached))
             {
                 httpContext.Response.Headers["Cache-Control"] = "public, max-age=604800, immutable";
+                _logger.LogInformation("[Resono] Delivered cached direct image bytes ({Bytes} bytes) for {Url}", cached.Bytes.Length, imageUrl);
                 return new FileContentResult(cached.Bytes, cached.ContentType);
             }
 
@@ -203,7 +281,7 @@ namespace Resono.Plugin.Filters
             {
                 var client = _httpClientFactory.CreateClient();
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(httpContext.RequestAborted);
-                cts.CancelAfter(TimeSpan.FromSeconds(5));
+                cts.CancelAfter(TimeSpan.FromSeconds(6));
 
                 var resp = await client.GetAsync(imageUrl, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
                 if (resp.IsSuccessStatusCode)
@@ -219,16 +297,18 @@ namespace Resono.Plugin.Filters
                         _imageCache[imageUrl] = (DateTime.UtcNow, bytes, contentType);
 
                         httpContext.Response.Headers["Cache-Control"] = "public, max-age=604800, immutable";
+                        _logger.LogInformation("[Resono] Downloaded and delivered direct image bytes ({Bytes} bytes) for {Url}", bytes.Length, imageUrl);
                         return new FileContentResult(bytes, contentType);
                     }
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "[Resono] Direct image byte download failed for {Url}: {Msg}", imageUrl, ex.Message);
+                _logger.LogWarning(ex, "[Resono] Direct image byte download failed for {Url}: {Msg}", imageUrl, ex.Message);
             }
 
             // Fallback to HTTP 302 if direct bytes could not be fetched
+            _logger.LogInformation("[Resono] Fallback to HTTP 302 for {Url}", imageUrl);
             return new RedirectResult(imageUrl, permanent: false);
         }
     }
