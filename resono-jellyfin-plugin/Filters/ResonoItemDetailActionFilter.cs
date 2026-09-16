@@ -12,7 +12,6 @@ using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
-using MediaBrowser.Model.Lyrics;
 using MediaBrowser.Model.MediaInfo;
 using MediaBrowser.Model.Querying;
 using Microsoft.AspNetCore.Http;
@@ -1558,7 +1557,7 @@ namespace Resono.Plugin.Filters
             return null;
         }
 
-        private async Task<LyricDto?> FetchSyncedLyricsAsync(Guid trackId, ResonoItemCache.Entry trackEntry, CancellationToken ct)
+        private async Task<ResonoLyricDto?> FetchSyncedLyricsAsync(Guid trackId, ResonoItemCache.Entry trackEntry, CancellationToken ct)
         {
             try
             {
@@ -1605,7 +1604,7 @@ namespace Resono.Plugin.Filters
                 }
                 catch { }
 
-                var lines = new List<LyricLine>();
+                var lines = new List<ResonoLyricLine>();
                 if (!string.IsNullOrWhiteSpace(data.SyncedLyrics))
                 {
                     var regex = new Regex(@"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\](.*)");
@@ -1623,7 +1622,7 @@ namespace Resono.Plugin.Filters
                             var ms = int.Parse(msStr);
                             var ticks = ((min * 60L + sec) * 1000L + ms) * 10000L;
                             var text = match.Groups[4].Value.Trim();
-                            lines.Add(new LyricLine(text, ticks));
+                            lines.Add(new ResonoLyricLine { Text = text, Start = ticks });
                         }
                     }
                 }
@@ -1631,7 +1630,7 @@ namespace Resono.Plugin.Filters
                 {
                     foreach (var rawLine in data.PlainLyrics.Split('\n'))
                     {
-                        lines.Add(new LyricLine(rawLine.Trim(), null));
+                        lines.Add(new ResonoLyricLine { Text = rawLine.Trim(), Start = null });
                     }
                 }
 
@@ -1641,9 +1640,9 @@ namespace Resono.Plugin.Filters
                     return null;
                 }
 
-                return new LyricDto
+                return new ResonoLyricDto
                 {
-                    Metadata = new LyricMetadata
+                    Metadata = new ResonoLyricMetadata
                     {
                         Artist = trackEntry.ArtistName,
                         Title = trackEntry.Name,
@@ -1738,6 +1737,39 @@ namespace Resono.Plugin.Filters
         public string? Description { get; set; }
         [JsonPropertyName("imageUrl")]
         public string? ImageUrl { get; set; }
+    }
+
+    public class ResonoLyricDto
+    {
+        [JsonPropertyName("Metadata")]
+        public ResonoLyricMetadata? Metadata { get; set; }
+
+        [JsonPropertyName("Lyrics")]
+        public List<ResonoLyricLine> Lyrics { get; set; } = new();
+    }
+
+    public class ResonoLyricMetadata
+    {
+        [JsonPropertyName("Artist")]
+        public string? Artist { get; set; }
+
+        [JsonPropertyName("Title")]
+        public string? Title { get; set; }
+
+        [JsonPropertyName("Album")]
+        public string? Album { get; set; }
+
+        [JsonPropertyName("IsSynced")]
+        public bool IsSynced { get; set; }
+    }
+
+    public class ResonoLyricLine
+    {
+        [JsonPropertyName("Text")]
+        public string Text { get; set; } = string.Empty;
+
+        [JsonPropertyName("Start")]
+        public long? Start { get; set; }
     }
 }
 
