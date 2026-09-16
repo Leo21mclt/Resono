@@ -81,7 +81,65 @@ namespace Resono.Plugin.Filters
                 }
             }
 
-            // 0.1 Audio Stream Proxy (/Audio/{id}/..., /Items/{id}/File, /Items/{id}/Download)
+            // 0.1 Synced Karaoke Lyrics (/Audio/{id}/Lyrics or /Items/{id}/Lyrics)
+            if (path.IndexOf("/Lyrics", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                if (TryExtractGuidFromPath(path, out var lyricItemId))
+                {
+                    if (!_cache.TryGet(lyricItemId, out var lyricEntry) || lyricEntry is not { Kind: "track" })
+                    {
+                        var cfg = Plugin.Instance?.Configuration;
+                        var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
+                        try
+                        {
+                            var metaClient = _httpClientFactory.CreateClient();
+                            var trackInfo = await metaClient.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{lyricItemId:N}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                            if (trackInfo != null)
+                            {
+                                var albId = !string.IsNullOrEmpty(trackInfo.AlbumId) ? ResonoItemCache.StubGuid("dz-album", trackInfo.AlbumId) : (Guid?)null;
+                                var artId = !string.IsNullOrEmpty(trackInfo.ArtistId) ? ResonoItemCache.StubGuid("dz-artist", trackInfo.ArtistId) : (Guid?)null;
+
+                                lyricEntry = new ResonoItemCache.Entry
+                                {
+                                    Kind = "track",
+                                    Name = trackInfo.Name,
+                                    ArtistName = trackInfo.ArtistName,
+                                    AlbumName = trackInfo.AlbumName,
+                                    SpotifyId = trackInfo.Id,
+                                    CanonicalId = trackInfo.CanonicalId,
+                                    ImageUrl = trackInfo.ImageUrl,
+                                    DurationMs = trackInfo.DurationMs,
+                                    TrackNumber = trackInfo.TrackNumber,
+                                    DiscNumber = trackInfo.DiscNumber,
+                                    StreamUrl = !string.IsNullOrEmpty(trackInfo.StreamUrl) ? $"{gatewayUrl}{trackInfo.StreamUrl}" : $"{gatewayUrl}/playback/{trackInfo.Id}",
+                                    AlbumId = albId,
+                                    ArtistId = artId
+                                };
+                                _cache.Set(lyricItemId, lyricEntry);
+                            }
+                        }
+                        catch
+                        {
+                            // ignore, handled below
+                        }
+                    }
+
+                    if (lyricEntry != null)
+                    {
+                        var lyricDto = await FetchSyncedLyricsAsync(lyricEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        if (lyricDto != null)
+                        {
+                            ctx.Result = new OkObjectResult(lyricDto);
+                            return;
+                        }
+
+                        ctx.Result = new NotFoundResult();
+                        return;
+                    }
+                }
+            }
+
+            // 0.2 Audio Stream Proxy (/Audio/{id}/..., /Items/{id}/File, /Items/{id}/Download)
             if (IsAudioStreamRoute(ctx, out var streamItemId))
             {
                 _cache.TryGet(streamItemId, out var streamEntry);
@@ -176,61 +234,6 @@ namespace Resono.Plugin.Filters
                     await ProxyAudioStreamAsync(ctx.HttpContext, targetUrl, cfg?.DeezerArl).ConfigureAwait(false);
                     ctx.Result = new EmptyResult();
                     return;
-                }
-            }
-
-            // 1. Synced Karaoke Lyrics (/Audio/{id}/Lyrics or /Items/{id}/Lyrics)
-            if (path.IndexOf("/Lyrics", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                if (TryExtractGuidFromPath(path, out var lyricItemId))
-                {
-                    if (!_cache.TryGet(lyricItemId, out var lyricEntry) || lyricEntry is not { Kind: "track" })
-                    {
-                        var cfg = Plugin.Instance?.Configuration;
-                        var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
-                        try
-                        {
-                            var metaClient = _httpClientFactory.CreateClient();
-                            var trackInfo = await metaClient.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{lyricItemId:N}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
-                            if (trackInfo != null)
-                            {
-                                var albId = !string.IsNullOrEmpty(trackInfo.AlbumId) ? ResonoItemCache.StubGuid("dz-album", trackInfo.AlbumId) : (Guid?)null;
-                                var artId = !string.IsNullOrEmpty(trackInfo.ArtistId) ? ResonoItemCache.StubGuid("dz-artist", trackInfo.ArtistId) : (Guid?)null;
-
-                                lyricEntry = new ResonoItemCache.Entry
-                                {
-                                    Kind = "track",
-                                    Name = trackInfo.Name,
-                                    ArtistName = trackInfo.ArtistName,
-                                    AlbumName = trackInfo.AlbumName,
-                                    SpotifyId = trackInfo.Id,
-                                    CanonicalId = trackInfo.CanonicalId,
-                                    ImageUrl = trackInfo.ImageUrl,
-                                    DurationMs = trackInfo.DurationMs,
-                                    TrackNumber = trackInfo.TrackNumber,
-                                    DiscNumber = trackInfo.DiscNumber,
-                                    StreamUrl = !string.IsNullOrEmpty(trackInfo.StreamUrl) ? $"{gatewayUrl}{trackInfo.StreamUrl}" : $"{gatewayUrl}/playback/{trackInfo.Id}",
-                                    AlbumId = albId,
-                                    ArtistId = artId
-                                };
-                                _cache.Set(lyricItemId, lyricEntry);
-                            }
-                        }
-                        catch
-                        {
-                            // ignore, fallback handled below
-                        }
-                    }
-
-                    if (lyricEntry != null)
-                    {
-                        var lyricDto = await FetchSyncedLyricsAsync(lyricEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
-                        if (lyricDto != null)
-                        {
-                            ctx.Result = new OkObjectResult(lyricDto);
-                            return;
-                        }
-                    }
                 }
             }
 
@@ -631,6 +634,12 @@ namespace Resono.Plugin.Filters
         {
             id = default;
             var path = ctx.HttpContext.Request.Path.Value ?? string.Empty;
+
+            // CRITICAL: Do NOT intercept /Lyrics routes as audio streams!
+            if (path.IndexOf("/Lyrics", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return false;
+            }
 
             // 1. /Audio/{id}/... (universal, stream, stream.mp3, main.mp3, etc.)
             if (path.StartsWith("/Audio/", StringComparison.OrdinalIgnoreCase))
@@ -1510,7 +1519,10 @@ namespace Resono.Plugin.Filters
                         {
                             var min = int.Parse(match.Groups[1].Value);
                             var sec = int.Parse(match.Groups[2].Value);
-                            var msStr = match.Groups[3].Value.PadRight(3, '0');
+                            var msStr = match.Groups[3].Success ? match.Groups[3].Value : "0";
+                            if (msStr.Length == 1) msStr += "00";
+                            else if (msStr.Length == 2) msStr += "0";
+                            else if (msStr.Length > 3) msStr = msStr.Substring(0, 3);
                             var ms = int.Parse(msStr);
                             var ticks = ((min * 60L + sec) * 1000L + ms) * 10000L;
                             var text = match.Groups[4].Value.Trim();
@@ -1522,7 +1534,7 @@ namespace Resono.Plugin.Filters
                 {
                     foreach (var rawLine in data.PlainLyrics.Split('\n'))
                     {
-                        lines.Add(new LyricLine(rawLine.Trim(), 0));
+                        lines.Add(new LyricLine(rawLine.Trim(), null));
                     }
                 }
 

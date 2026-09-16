@@ -250,6 +250,7 @@ async def jellyfin_search(
     results = await catalog_manager.search(q, limit=limit, provider=provider, fallback=fallback)
 
     return {
+        "bestResultType": results.best_result_type,
         "artists": [
             {
                 "id": a.id,

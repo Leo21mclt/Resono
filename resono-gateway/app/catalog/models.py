@@ -35,3 +35,4 @@ class CatalogSearchResult(BaseModel):
     artists: list[CatalogArtist] = Field(default_factory=list)
     albums: list[CatalogAlbum] = Field(default_factory=list)
     tracks: list[CatalogTrack] = Field(default_factory=list)
+    best_result_type: str | None = None

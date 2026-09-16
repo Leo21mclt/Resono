@@ -82,7 +82,7 @@ class CatalogManager:
                 # Enrich artists with real HD portraits from Deezer
                 try:
                     dz = self.providers["deezer"]
-                    if hasattr(dz, "search_artists"):
+                    if hasattr(dz, "search_artists") and primary.name != "deezer":
                         dz_artists = await dz.search_artists(clean_query, limit=10)
                         if dz_artists:
                             # Build a name→artwork lookup from Deezer HD portraits
@@ -360,7 +360,7 @@ class CatalogManager:
                 params["album_name"] = album
             if duration_sec:
                 params["duration"] = duration_sec
-            async with httpx.AsyncClient(timeout=8.0) as client:
+            async with httpx.AsyncClient(timeout=8.0, headers={"User-Agent": "Resono/1.0 (https://github.com/Leo21mclt/Resono)"}) as client:
                 res = await client.get("https://lrclib.net/api/get", params=params)
                 if res.status_code == 200:
                     data = res.json()

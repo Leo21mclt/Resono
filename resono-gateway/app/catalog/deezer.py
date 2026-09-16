@@ -2,19 +2,24 @@ from __future__ import annotations
 import asyncio
 import httpx
 import logging
+import time
 from typing import Any
 from app.catalog.models import CatalogSearchResult, CatalogArtist, CatalogAlbum, CatalogTrack
 from app.catalog.provider import CatalogProvider
+from app.catalog.deezer_query import SEARCH_FULL_QUERY
 
 logger = logging.getLogger("resono.catalog.deezer")
 
 class DeezerProvider(CatalogProvider):
     """
     Fast public Deezer catalog provider.
-    100% unauthenticated, ultra-fast (~80ms), with HD 1000x1000 artwork.
+    Powered by Deezer Web SearchFull GraphQL engine for 1:1 parity with Deezer Web.
     """
     def __init__(self):
         self.base_url = "https://api.deezer.com"
+        self._jwt_token: str | None = None
+        self._jwt_expires_at: float = 0.0
+        self._jwt_lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
@@ -27,10 +32,236 @@ class DeezerProvider(CatalogProvider):
             headers={"User-Agent": "Resono/0.1.0 (Deezer Public Catalog)"}
         )
 
+    async def _get_anonymous_jwt(self) -> str | None:
+        now = time.time()
+        if self._jwt_token and now < self._jwt_expires_at:
+            return self._jwt_token
+
+        async with self._jwt_lock:
+            if self._jwt_token and now < self._jwt_expires_at:
+                return self._jwt_token
+
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    r = await client.post(
+                        "https://auth.deezer.com/login/anonymous?jo=p&rto=c",
+                        json={},
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+                            "Origin": "https://www.deezer.com",
+                            "Referer": "https://www.deezer.com/"
+                        }
+                    )
+                    if r.status_code == 200:
+                        token = r.json().get("jwt")
+                        if token:
+                            self._jwt_token = token
+                            self._jwt_expires_at = now + 3000
+                            return token
+            except Exception as e:
+                logger.warning(f"Failed to fetch anonymous Deezer JWT: {e}")
+            return None
+
+    async def _search_graphql(self, query: str, limit: int = 20) -> CatalogSearchResult | None:
+        token = await self._get_anonymous_jwt()
+        if not token:
+            return None
+
+        payload = {
+            "operationName": "SearchFull",
+            "variables": {
+                "query": query,
+                "firstGrid": limit,
+                "firstList": limit,
+                "includeRelatedContent": False,
+                "channelPlaylistFirst": 5
+            },
+            "query": SEARCH_FULL_QUERY
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "Origin": "https://www.deezer.com",
+            "Referer": "https://www.deezer.com/"
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                r = await client.post("https://pipe.deezer.com/api", json=payload, headers=headers)
+                if r.status_code != 200:
+                    return None
+                data = r.json()
+        except Exception as e:
+            logger.debug(f"Deezer GraphQL request error: {e}")
+            return None
+
+        instant = data.get("data", {}).get("instantSearch", {})
+        if not instant:
+            return None
+
+        best = instant.get("bestResult") or {}
+        results = instant.get("results") or {}
+
+        albums: list[CatalogAlbum] = []
+        artists: list[CatalogArtist] = []
+        tracks: list[CatalogTrack] = []
+        seen_albums: set[str] = set()
+        seen_artists: set[str] = set()
+        seen_tracks: set[str] = set()
+
+        def clean_cover(url: str | None) -> str | None:
+            if not url:
+                return None
+            if "/500x500" in url:
+                return url.replace("/500x500", "/1000x1000")
+            return url
+
+        best_type = best.get("__typename")
+        best_result_type = None
+
+        if best_type == "InstantSearchAlbumBestResult":
+            best_result_type = "album"
+            node = best.get("album") or {}
+            al_id = str(node.get("id", ""))
+            if al_id:
+                cover = clean_cover(((node.get("cover") or {}).get("large") or [None])[0])
+                contribs = (node.get("contributors") or {}).get("edges") or []
+                art_node = contribs[0].get("node") or {} if contribs else {}
+                art_id = str(art_node.get("id", ""))
+                art_name = art_node.get("name") or "Unknown Artist"
+                full_id = f"deezer:album:{al_id}"
+                albums.append(CatalogAlbum(
+                    id=full_id,
+                    title=node.get("displayTitle") or "",
+                    artist_name=art_name,
+                    artist_id=f"deezer:artist:{art_id}" if art_id else "",
+                    artwork_url=cover
+                ))
+                seen_albums.add(full_id)
+        elif best_type == "InstantSearchArtistBestResult":
+            best_result_type = "artist"
+            node = best.get("artist") or {}
+            ar_id = str(node.get("id", ""))
+            if ar_id:
+                pic = clean_cover(((node.get("picture") or {}).get("large") or [None])[0])
+                full_id = f"deezer:artist:{ar_id}"
+                artists.append(CatalogArtist(
+                    id=full_id,
+                    name=node.get("name") or "",
+                    artwork_url=pic
+                ))
+                seen_artists.add(full_id)
+        elif best_type == "InstantSearchTrackBestResult":
+            best_result_type = "track"
+            node = best.get("track") or {}
+            tr_id = str(node.get("id", ""))
+            if tr_id:
+                alb_node = node.get("album") or {}
+                alb_id = str(alb_node.get("id", ""))
+                alb_title = alb_node.get("displayTitle") or "Unknown Album"
+                cover = clean_cover(((alb_node.get("cover") or {}).get("large") or [None])[0])
+                contribs = (node.get("contributors") or {}).get("edges") or []
+                art_node = contribs[0].get("node") or {} if contribs else {}
+                art_id = str(art_node.get("id", ""))
+                art_name = art_node.get("name") or "Unknown Artist"
+                full_id = f"deezer:track:{tr_id}"
+                tracks.append(CatalogTrack(
+                    id=full_id,
+                    title=node.get("title") or "",
+                    artist_name=art_name,
+                    artist_id=f"deezer:artist:{art_id}" if art_id else "",
+                    album_title=alb_title,
+                    album_id=f"deezer:album:{alb_id}" if alb_id else "",
+                    duration_ms=(node.get("duration") or 0) * 1000,
+                    artwork_url=cover,
+                    explicit=bool(node.get("isExplicit", False))
+                ))
+                seen_tracks.add(full_id)
+
+        # Process albums
+        for edge in (results.get("albums") or {}).get("edges") or []:
+            node = edge.get("node") or {}
+            al_id = str(node.get("id", ""))
+            full_id = f"deezer:album:{al_id}"
+            if al_id and full_id not in seen_albums:
+                seen_albums.add(full_id)
+                cover = clean_cover(((node.get("cover") or {}).get("large") or [None])[0])
+                contribs = (node.get("contributors") or {}).get("edges") or []
+                art_node = contribs[0].get("node") or {} if contribs else {}
+                art_id = str(art_node.get("id", ""))
+                art_name = art_node.get("name") or "Unknown Artist"
+                albums.append(CatalogAlbum(
+                    id=full_id,
+                    title=node.get("displayTitle") or "",
+                    artist_name=art_name,
+                    artist_id=f"deezer:artist:{art_id}" if art_id else "",
+                    artwork_url=cover
+                ))
+
+        # Process artists
+        for edge in (results.get("artists") or {}).get("edges") or []:
+            node = edge.get("node") or {}
+            ar_id = str(node.get("id", ""))
+            full_id = f"deezer:artist:{ar_id}"
+            if ar_id and full_id not in seen_artists:
+                seen_artists.add(full_id)
+                pic = clean_cover(((node.get("picture") or {}).get("large") or [None])[0])
+                artists.append(CatalogArtist(
+                    id=full_id,
+                    name=node.get("name") or "",
+                    artwork_url=pic
+                ))
+
+        # Process tracks
+        for edge in (results.get("tracks") or {}).get("edges") or []:
+            node = edge.get("node") or {}
+            tr_id = str(node.get("id", ""))
+            full_id = f"deezer:track:{tr_id}"
+            if tr_id and full_id not in seen_tracks:
+                seen_tracks.add(full_id)
+                alb_node = node.get("album") or {}
+                alb_id = str(alb_node.get("id", ""))
+                alb_title = alb_node.get("displayTitle") or "Unknown Album"
+                cover = clean_cover(((alb_node.get("cover") or {}).get("large") or [None])[0])
+                contribs = (node.get("contributors") or {}).get("edges") or []
+                art_node = contribs[0].get("node") or {} if contribs else {}
+                art_id = str(art_node.get("id", ""))
+                art_name = art_node.get("name") or "Unknown Artist"
+                tracks.append(CatalogTrack(
+                    id=full_id,
+                    title=node.get("title") or "",
+                    artist_name=art_name,
+                    artist_id=f"deezer:artist:{art_id}" if art_id else "",
+                    album_title=alb_title,
+                    album_id=f"deezer:album:{alb_id}" if alb_id else "",
+                    duration_ms=(node.get("duration") or 0) * 1000,
+                    artwork_url=cover,
+                    explicit=bool(node.get("isExplicit", False))
+                ))
+
+        if not artists and not albums and not tracks:
+            return None
+
+        return CatalogSearchResult(
+            artists=artists[:limit],
+            albums=albums[:limit],
+            tracks=tracks[:limit],
+            best_result_type=best_result_type
+        )
+
     async def search(self, query: str, limit: int = 20) -> CatalogSearchResult:
         clean_q = query.strip()
         if not clean_q:
             return CatalogSearchResult()
+
+        # 1. Primary: Deezer Web SearchFull GraphQL (exact 1:1 match with Deezer Web, bestResult intent, priority ordering)
+        try:
+            gql_res = await self._search_graphql(clean_q, limit=limit)
+            if gql_res and (gql_res.artists or gql_res.albums or gql_res.tracks):
+                return gql_res
+        except Exception as e:
+            logger.warning(f"Deezer GraphQL search failed for '{clean_q}', falling back to REST: {e}")
 
         try:
             # 1. Run smart artist search (filters spam/piano/tributes and enriches with related artists)
