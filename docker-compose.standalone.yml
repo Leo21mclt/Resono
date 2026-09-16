@@ -1,0 +1,31 @@
+﻿services:
+  resono-gateway:
+    image: ghcr.io/leo21mclt/resono:latest
+    container_name: resono-gateway
+    restart: unless-stopped
+    ports:
+      - ":8080"
+    environment:
+      - RESONO_HOST=0.0.0.0
+      - RESONO_PORT=8080
+      - RESONO_MAX_CACHE_SIZE_GB=
+      - RESONO_MIN_FREE_DISK_GB=
+      - RESONO_MATCHER_CONFIDENCE_THRESHOLD=
+      - RESONO_DEEZER_ARL=
+      - RESONO_PRIMARY_PLAYBACK_SOURCE=
+      - RESONO_FALLBACK_PLAYBACK_SOURCE=
+      - SPOTIFY_CLIENT_ID=
+      - SPOTIFY_CLIENT_SECRET=
+    volumes:
+      - resono-data:/app/data
+      - resono-cache:/app/cache
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  resono-data:
+  resono-cache:

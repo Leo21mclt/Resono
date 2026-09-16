@@ -32,19 +32,25 @@ jobs:
           dotnet build resono-jellyfin-plugin/Resono.Plugin.csproj -c Release -o resono-jellyfin-plugin/dist -v normal
           mkdir -p resono-gateway/plugin
           cp resono-jellyfin-plugin/dist/Resono.Plugin.dll resono-gateway/plugin/Resono.Plugin.dll
+          CHECKSUM=$(md5sum resono-gateway/plugin/Resono.Plugin.dll | awk '{print $1}')
+          echo "Plugin MD5: $CHECKSUM"
+          python3 -c "import json; data = json.load(open('manifest.json')); data[0]['versions'][0]['checksum'] = '$CHECKSUM'; json.dump(data, open('manifest.json', 'w'), indent=2)"
 
-      - name: Commit updated DLL back to repository
+      - name: Commit updated DLL and manifest back to repository
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add resono-gateway/plugin/Resono.Plugin.dll
-          git diff --staged --quiet || (git commit -m "build: update compiled Resono.Plugin.dll [skip ci]" && git push origin main) || true
+          git add resono-gateway/plugin/Resono.Plugin.dll manifest.json
+          git diff --staged --quiet || (git commit -m "build: update compiled Resono.Plugin.dll and manifest [skip ci]" && git push origin main) || true
 
       - name: Upload Resono Plugin Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Resono.Plugin-dll
           path: resono-jellyfin-plugin/dist/Resono.Plugin.dll
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -70,6 +76,7 @@ jobs:
         with:
           context: ./resono-gateway
           file: ./resono-gateway/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

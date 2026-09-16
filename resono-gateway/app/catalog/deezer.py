@@ -131,11 +131,15 @@ class DeezerProvider(CatalogProvider):
                 art_id = str(art_node.get("id", ""))
                 art_name = art_node.get("name") or "Unknown Artist"
                 full_id = f"deezer:album:{al_id}"
+                rel_date = node.get("releaseDateAlbum")
+                prod_year = int(rel_date[:4]) if rel_date and len(rel_date) >= 4 and rel_date[:4].isdigit() else None
                 albums.append(CatalogAlbum(
                     id=full_id,
                     title=node.get("displayTitle") or "",
                     artist_name=art_name,
                     artist_id=f"deezer:artist:{art_id}" if art_id else "",
+                    release_date=rel_date,
+                    production_year=prod_year,
                     artwork_url=cover
                 ))
                 seen_albums.add(full_id)
@@ -191,11 +195,15 @@ class DeezerProvider(CatalogProvider):
                 art_node = contribs[0].get("node") or {} if contribs else {}
                 art_id = str(art_node.get("id", ""))
                 art_name = art_node.get("name") or "Unknown Artist"
+                rel_date = node.get("releaseDateAlbum")
+                prod_year = int(rel_date[:4]) if rel_date and len(rel_date) >= 4 and rel_date[:4].isdigit() else None
                 albums.append(CatalogAlbum(
                     id=full_id,
                     title=node.get("displayTitle") or "",
                     artist_name=art_name,
                     artist_id=f"deezer:artist:{art_id}" if art_id else "",
+                    release_date=rel_date,
+                    production_year=prod_year,
                     artwork_url=cover
                 ))
 
@@ -358,6 +366,8 @@ class DeezerProvider(CatalogProvider):
                         title=al_title,
                         artist_name=art_name,
                         artist_id=f"deezer:artist:{art_id}" if art_id else "",
+                        release_date=it.get("release_date"),
+                        production_year=int(it.get("release_date")[:4]) if it.get("release_date") and len(it.get("release_date")) >= 4 and it.get("release_date")[:4].isdigit() else None,
                         artwork_url=cover
                     )
 

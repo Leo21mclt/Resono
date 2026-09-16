@@ -267,6 +267,8 @@ async def jellyfin_search(
                 "artistName": al.artist_name,
                 "artistId": al.artist_id,
                 "releaseDate": al.release_date,
+                "productionYear": al.production_year or (int(al.release_date[:4]) if al.release_date and len(al.release_date) >= 4 and al.release_date[:4].isdigit() else None),
+                "genres": al.genres,
                 "imageUrl": al.artwork_url,
                 "providerIds": extract_provider_ids(al.id)
             }

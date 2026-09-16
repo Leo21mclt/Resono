@@ -104,8 +104,17 @@ namespace Resono.Plugin.Filters
                     foreach (var s in segments)
                     {
                         var clean = s.IndexOf('.') >= 0 ? s.Split('.')[0] : s;
+                        if (clean.StartsWith("resono-", StringComparison.OrdinalIgnoreCase))
+                        {
+                            clean = clean.Substring("resono-".Length);
+                        }
                         if (Guid.TryParse(clean, out _)) { idStr = clean; break; }
                     }
+                }
+
+                if (idStr is not null && idStr.StartsWith("resono-", StringComparison.OrdinalIgnoreCase))
+                {
+                    idStr = idStr.Substring("resono-".Length);
                 }
 
                 if (idStr is not null && Guid.TryParse(idStr, out var itemId))

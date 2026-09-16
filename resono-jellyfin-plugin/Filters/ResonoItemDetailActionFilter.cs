@@ -35,10 +35,25 @@ namespace Resono.Plugin.Filters
 
         private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Items)> _artistAlbumsCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Items)> _artistTopTracksCache = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly ConcurrentDictionary<Guid, (DateTime Expires, List<BaseItemDto> Items)> _albumTracksCache = new();
+        public static readonly ConcurrentDictionary<Guid, (DateTime Expires, List<BaseItemDto> Items)> _albumTracksCache = new();
         private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Items)> _chartTracksCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, (DateTime Expires, List<BaseItemDto> Items)> _recommendedAlbumsCache = new(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan MetadataCacheDuration = TimeSpan.FromMinutes(10);
+
+        public static bool TryGetCachedAlbumGenres(Guid albumId, out List<string>? genres)
+        {
+            if (_albumTracksCache.TryGetValue(albumId, out var cached) && cached.Items?.Count > 0)
+            {
+                var inferred = cached.Items.SelectMany(t => t.Genres ?? Array.Empty<string>()).Where(g => !string.IsNullOrWhiteSpace(g)).Distinct().ToList();
+                if (inferred.Count > 0)
+                {
+                    genres = inferred;
+                    return true;
+                }
+            }
+            genres = null;
+            return false;
+        }
 
         public ResonoItemDetailActionFilter(
             ResonoItemCache cache,
@@ -385,6 +400,11 @@ namespace Resono.Plugin.Filters
 
                 if (singleEntry != null)
                 {
+                    if (singleEntry.Id == Guid.Empty) singleEntry.Id = singleId;
+                    if (singleEntry.Kind == "album" && (singleEntry.ProductionYear == null || singleEntry.Genres == null || singleEntry.Genres.Count == 0 || string.IsNullOrEmpty(singleEntry.ArtistName)))
+                    {
+                        await FetchAlbumTracksAsync(singleEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                    }
                     _logger.LogInformation("[Resono] Serving Single-Item Detail for {Id} ({Kind}: '{Name}')", singleId, singleEntry.Kind, singleEntry.Name);
                     BaseItemDto dto = singleEntry.Kind switch
                     {
@@ -429,6 +449,11 @@ namespace Resono.Plugin.Filters
                         }
                         if (sEntry != null)
                         {
+                            if (sEntry.Id == Guid.Empty) sEntry.Id = sId;
+                            if (sEntry.Kind == "album" && (sEntry.ProductionYear == null || sEntry.Genres == null || sEntry.Genres.Count == 0 || string.IsNullOrEmpty(sEntry.ArtistName)))
+                            {
+                                await FetchAlbumTracksAsync(sEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                            }
                             BaseItemDto dto = sEntry.Kind switch
                             {
                                 "artist" => ResonoSearchActionFilter.BuildArtistDto(sId, sEntry),
@@ -730,16 +755,17 @@ namespace Resono.Plugin.Filters
             {
                 if (!hasPhysicalImage)
                 {
-                    var albumArtTag = "resono-" + dto.Id.ToString("N");
+                    var albumArtTag = dto.Id.ToString("N");
                     dto.ImageTags ??= new Dictionary<ImageType, string>();
                     dto.ImageTags[ImageType.Primary] = albumArtTag;
 
                     dto.ImageBlurHashes ??= new Dictionary<ImageType, Dictionary<string, string>>();
-                    if (!dto.ImageBlurHashes.ContainsKey(ImageType.Primary))
+                    dto.ImageBlurHashes[ImageType.Primary] = new Dictionary<string, string>
                     {
-                        dto.ImageBlurHashes[ImageType.Primary] = new Dictionary<string, string>();
-                    }
+                        { albumArtTag, "eODJO}t7%MWBt79FWBIUayRj00ayxut7t7_3ofofWBWB%MayIUWBay" }
+                    };
                     dto.PrimaryImageAspectRatio = 1.0;
+                    dto.LocationType = LocationType.FileSystem;
                 }
 
                 // Metadata consistency
@@ -805,27 +831,27 @@ namespace Resono.Plugin.Filters
                     {
                         albumArtTag = !string.IsNullOrEmpty(dto.AlbumPrimaryImageTag)
                             ? dto.AlbumPrimaryImageTag
-                            : "local-" + albumId.Value.ToString("N");
+                            : albumId.Value.ToString("N");
                     }
                     else
                     {
-                        albumArtTag = "resono-" + albumId.Value.ToString("N");
+                        albumArtTag = albumId.Value.ToString("N");
                     }
+
+                    var trackArtTag = dto.Id.ToString("N");
 
                     dto.AlbumPrimaryImageTag = albumArtTag;
 
-                    if (dto.ImageTags == null || !dto.ImageTags.ContainsKey(ImageType.Primary))
-                    {
-                        dto.ImageTags ??= new Dictionary<ImageType, string>();
-                        dto.ImageTags[ImageType.Primary] = albumArtTag;
-                    }
+                    dto.ImageTags ??= new Dictionary<ImageType, string>();
+                    dto.ImageTags[ImageType.Primary] = trackArtTag;
 
                     dto.ImageBlurHashes ??= new Dictionary<ImageType, Dictionary<string, string>>();
-                    if (!dto.ImageBlurHashes.ContainsKey(ImageType.Primary))
+                    dto.ImageBlurHashes[ImageType.Primary] = new Dictionary<string, string>
                     {
-                        dto.ImageBlurHashes[ImageType.Primary] = new Dictionary<string, string>();
-                    }
+                        { trackArtTag, "eODJO}t7%MWBt79FWBIUayRj00ayxut7t7_3ofofWBWB%MayIUWBay" }
+                    };
                     dto.PrimaryImageAspectRatio = 1.0;
+                    dto.LocationType = LocationType.FileSystem;
                 }
 
                 var trackArtist = !string.IsNullOrWhiteSpace(dto.AlbumArtist) && !string.Equals(dto.AlbumArtist, "Unknown", StringComparison.OrdinalIgnoreCase)
@@ -871,18 +897,16 @@ namespace Resono.Plugin.Filters
             {
                 if (!hasPhysicalImage)
                 {
-                    var artTag = "resono-" + dto.Id.ToString("N");
+                    var artTag = dto.Id.ToString("N");
                     dto.ImageTags ??= new Dictionary<ImageType, string>();
-                    if (!dto.ImageTags.ContainsKey(ImageType.Primary))
-                    {
-                        dto.ImageTags[ImageType.Primary] = artTag;
-                    }
+                    dto.ImageTags[ImageType.Primary] = artTag;
                     dto.ImageBlurHashes ??= new Dictionary<ImageType, Dictionary<string, string>>();
-                    if (!dto.ImageBlurHashes.ContainsKey(ImageType.Primary))
+                    dto.ImageBlurHashes[ImageType.Primary] = new Dictionary<string, string>
                     {
-                        dto.ImageBlurHashes[ImageType.Primary] = new Dictionary<string, string>();
-                    }
+                        { artTag, "eODJO}t7%MWBt79FWBIUayRj00ayxut7t7_3ofofWBWB%MayIUWBay" }
+                    };
                     dto.PrimaryImageAspectRatio = 1.0;
+                    dto.LocationType = LocationType.FileSystem;
                 }
             }
         }
@@ -1641,6 +1665,14 @@ namespace Resono.Plugin.Filters
         {
             if (_albumTracksCache.TryGetValue(albumEntry.Id, out var cached) && DateTime.UtcNow < cached.Expires)
             {
+                if ((albumEntry.Genres == null || albumEntry.Genres.Count == 0) && cached.Items?.Count > 0)
+                {
+                    var trackGenres = cached.Items.SelectMany(t => t.Genres ?? Array.Empty<string>()).Where(g => !string.IsNullOrWhiteSpace(g)).Distinct().ToList();
+                    if (trackGenres.Count > 0)
+                    {
+                        albumEntry.Genres = trackGenres;
+                    }
+                }
                 return cached.Items;
             }
 
@@ -1683,8 +1715,12 @@ namespace Resono.Plugin.Filters
                     albumEntry.PremiereDate = albDto;
                     if (!albumEntry.ProductionYear.HasValue) albumEntry.ProductionYear = albDto.Year;
                 }
-                _cache.Set(albumEntry.Id, albumEntry);
-                _registrar.RegisterAlbum(albumEntry.Id, albumEntry.Name, albumEntry.ArtistName);
+                var albKey = albumEntry.Id != Guid.Empty
+                    ? albumEntry.Id
+                    : (Guid.TryParse(albumData.Id ?? "", out var parsedG) ? parsedG : ResonoItemCache.StubGuid("dz-album", albumData.Name ?? ""));
+                albumEntry.Id = albKey;
+                _cache.Set(albKey, albumEntry);
+                _registrar.RegisterAlbum(albKey, albumEntry.Name, albumEntry.ArtistName);
 
                 var result = new List<BaseItemDto>();
                 foreach (var t in albumData.Tracks)
@@ -1698,6 +1734,7 @@ namespace Resono.Plugin.Filters
 
                     var entry = new ResonoItemCache.Entry
                     {
+                        Id = trackId,
                         Kind = "track",
                         Name = t.Name,
                         ArtistName = t.ArtistName ?? albumEntry.ArtistName,
@@ -1709,7 +1746,7 @@ namespace Resono.Plugin.Filters
                         TrackNumber = t.TrackNumber,
                         DiscNumber = t.DiscNumber,
                         StreamUrl = streamUrl,
-                        AlbumId = albumEntry.Id,
+                        AlbumId = albKey,
                         ArtistId = albumEntry.ArtistId,
                         ProductionYear = albumEntry.ProductionYear,
                         PremiereDate = albumEntry.PremiereDate,
@@ -1723,7 +1760,7 @@ namespace Resono.Plugin.Filters
 
                 if (result.Count > 0)
                 {
-                    _albumTracksCache[albumEntry.Id] = (DateTime.UtcNow.Add(MetadataCacheDuration), result);
+                    _albumTracksCache[albKey] = (DateTime.UtcNow.Add(MetadataCacheDuration), result);
                 }
 
                 return result;

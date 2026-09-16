@@ -492,12 +492,15 @@ namespace Resono.Plugin.Filters
                             gatewayHints.Add(new SearchHint
                             {
                                 Id = id,
+                                ItemId = id,
                                 Name = a.Name,
                                 Type = BaseItemKind.MusicArtist,
                                 MediaType = MediaType.Unknown,
-                                Artists = !string.IsNullOrEmpty(a.Name) ? new[] { a.Name } : Array.Empty<string>(),
-                                AlbumArtist = a.Name,
-                                PrimaryImageTag = "resono-" + id.ToString("N")
+                                Artists = Array.Empty<string>(),
+                                AlbumArtist = null,
+                                IsFolder = true,
+                                PrimaryImageAspectRatio = 1.0,
+                                PrimaryImageTag = id.ToString("N")
                             });
                         }
                     }
@@ -525,6 +528,7 @@ namespace Resono.Plugin.Filters
 
                         var entry = new ResonoItemCache.Entry
                         {
+                            Id = id,
                             Kind = "album",
                             Name = al.Name,
                             ArtistName = al.ArtistName,
@@ -533,7 +537,7 @@ namespace Resono.Plugin.Filters
                             ArtistId = artistId,
                             ProductionYear = albYear,
                             PremiereDate = albDate,
-                            Genres = al.Genres
+                            Genres = (al.Genres != null && al.Genres.Count > 0) ? al.Genres : null
                         };
                         _cache.Set(id, entry);
                         if (!string.IsNullOrEmpty(al.Name))
@@ -546,13 +550,17 @@ namespace Resono.Plugin.Filters
                             gatewayHints.Add(new SearchHint
                             {
                                 Id = id,
+                                ItemId = id,
                                 Name = al.Name,
                                 Type = BaseItemKind.MusicAlbum,
                                 MediaType = MediaType.Unknown,
                                 Album = al.Name,
                                 AlbumArtist = al.ArtistName,
                                 Artists = !string.IsNullOrEmpty(al.ArtistName) ? new[] { al.ArtistName } : Array.Empty<string>(),
-                                PrimaryImageTag = "resono-" + id.ToString("N")
+                                ProductionYear = albYear,
+                                IsFolder = true,
+                                PrimaryImageAspectRatio = 1.0,
+                                PrimaryImageTag = id.ToString("N")
                             });
                         }
                     }
@@ -582,6 +590,7 @@ namespace Resono.Plugin.Filters
                             {
                                 _cache.Set(albumId.Value, new ResonoItemCache.Entry
                                 {
+                                    Id = albumId.Value,
                                     Kind = "album",
                                     Name = t.AlbumName,
                                     ArtistName = t.ArtistName,
@@ -609,6 +618,7 @@ namespace Resono.Plugin.Filters
 
                         var entry = new ResonoItemCache.Entry
                         {
+                            Id = id,
                             Kind = "track",
                             Name = t.Name,
                             ArtistName = t.ArtistName,
@@ -631,6 +641,7 @@ namespace Resono.Plugin.Filters
                             gatewayHints.Add(new SearchHint
                             {
                                 Id = id,
+                                ItemId = id,
                                 Name = t.Name,
                                 Type = BaseItemKind.Audio,
                                 MediaType = MediaType.Audio,
@@ -638,7 +649,8 @@ namespace Resono.Plugin.Filters
                                 Album = t.AlbumName,
                                 AlbumId = albumId,
                                 AlbumArtist = t.ArtistName,
-                                PrimaryImageTag = "resono-" + id.ToString("N"),
+                                PrimaryImageTag = id.ToString("N"),
+                                PrimaryImageAspectRatio = 1.0,
                                 RunTimeTicks = t.DurationMs.HasValue ? (long)t.DurationMs.Value * 10000 : null,
                                 IndexNumber = t.TrackNumber,
                             });
@@ -1107,7 +1119,7 @@ namespace Resono.Plugin.Filters
 
         public static BaseItemDto BuildPlaylistDto(Guid id, ResonoItemCache.Entry e)
         {
-            var imageTag = "resono-" + id.ToString("N");
+            var imageTag = id.ToString("N");
             return new BaseItemDto
             {
                 Id = id,
@@ -1117,12 +1129,16 @@ namespace Resono.Plugin.Filters
                 MediaType = MediaType.Audio,
                 Tags = new[] { "ResonoVirtual", "Discovery" },
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
+                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>>
+                {
+                    { ImageType.Primary, new Dictionary<string, string> { { imageTag, "eODJO}t7%MWBt79FWBIUayRj00ayxut7t7_3ofofWBWB%MayIUWBay" } } }
+                },
                 PrimaryImageAspectRatio = 1.0,
                 ChildCount = 50,
                 IsFolder = true,
                 CanDelete = false,
                 CanDownload = false,
-                LocationType = LocationType.Virtual,
+                LocationType = LocationType.FileSystem,
                 UserData = new UserItemDataDto
                 {
                     PlaybackPositionTicks = 0,
@@ -1136,7 +1152,7 @@ namespace Resono.Plugin.Filters
 
         public static BaseItemDto BuildArtistDto(Guid id, ResonoItemCache.Entry e)
         {
-            var imageTag = "resono-" + id.ToString("N");
+            var imageTag = id.ToString("N");
             var name = e.Name ?? "(unknown artist)";
             var pair = new[] { new NameGuidPair { Name = name, Id = id } };
             return new BaseItemDto
@@ -1148,7 +1164,10 @@ namespace Resono.Plugin.Filters
                 MediaType = MediaType.Unknown,
                 Tags = new[] { "ResonoVirtual" },
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
-                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new Dictionary<string, string>() } },
+                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>>
+                {
+                    { ImageType.Primary, new Dictionary<string, string> { { imageTag, "eODJO}t7%MWBt79FWBIUayRj00ayxut7t7_3ofofWBWB%MayIUWBay" } } }
+                },
                 PrimaryImageAspectRatio = 1.0,
                 IsFolder = true,
                 Artists = new[] { name },
@@ -1158,7 +1177,7 @@ namespace Resono.Plugin.Filters
                 ChildCount = 50,
                 SongCount = 50,
                 AlbumCount = 20,
-                LocationType = LocationType.Virtual,
+                LocationType = LocationType.FileSystem,
                 UserData = new UserItemDataDto
                 {
                     PlaybackPositionTicks = 0,
@@ -1172,15 +1191,22 @@ namespace Resono.Plugin.Filters
 
         public static BaseItemDto BuildAlbumDto(Guid id, ResonoItemCache.Entry e)
         {
-            var imageTag = "resono-" + id.ToString("N");
+            var imageTag = id.ToString("N");
             NameGuidPair[]? artistPair = null;
             if (!string.IsNullOrEmpty(e.ArtistName))
             {
                 artistPair = new[] { new NameGuidPair { Name = e.ArtistName, Id = e.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", e.ArtistName) } };
             }
 
-            var genrePairs = e.Genres != null && e.Genres.Count > 0
-                ? e.Genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray()
+            var genresList = (e.Genres != null && e.Genres.Count > 0) ? e.Genres : null;
+            if (genresList == null && ResonoItemDetailActionFilter.TryGetCachedAlbumGenres(id, out var cachedGenres))
+            {
+                genresList = cachedGenres;
+                e.Genres = cachedGenres;
+            }
+
+            var genrePairs = genresList != null && genresList.Count > 0
+                ? genresList.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray()
                 : Array.Empty<NameGuidPair>();
 
             return new BaseItemDto
@@ -1192,7 +1218,10 @@ namespace Resono.Plugin.Filters
                 MediaType = MediaType.Unknown,
                 Tags = new[] { "ResonoVirtual" },
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
-                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new Dictionary<string, string>() } },
+                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>>
+                {
+                    { ImageType.Primary, new Dictionary<string, string> { { imageTag, "eODJO}t7%MWBt79FWBIUayRj00ayxut7t7_3ofofWBWB%MayIUWBay" } } }
+                },
                 PrimaryImageAspectRatio = 1.0,
                 Artists = !string.IsNullOrEmpty(e.ArtistName) ? new[] { e.ArtistName } : null,
                 AlbumArtist = e.ArtistName,
@@ -1200,10 +1229,10 @@ namespace Resono.Plugin.Filters
                 ArtistItems = artistPair ?? Array.Empty<NameGuidPair>(),
                 ProductionYear = e.ProductionYear,
                 PremiereDate = e.PremiereDate,
-                Genres = e.Genres?.ToArray(),
+                Genres = genresList?.ToArray(),
                 GenreItems = genrePairs,
                 IsFolder = true,
-                LocationType = LocationType.Virtual,
+                LocationType = LocationType.FileSystem,
                 UserData = new UserItemDataDto
                 {
                     PlaybackPositionTicks = 0,
@@ -1269,7 +1298,8 @@ namespace Resono.Plugin.Filters
 
         public static BaseItemDto BuildTrackDto(Guid id, ResonoItemCache.Entry e)
         {
-            var albumImageTag = e.AlbumId.HasValue ? "resono-" + e.AlbumId.Value.ToString("N") : ("resono-" + id.ToString("N"));
+            var trackImageTag = id.ToString("N");
+            var albumImageTag = e.AlbumId.HasValue ? e.AlbumId.Value.ToString("N") : trackImageTag;
 
             NameGuidPair[]? artistPair = null;
             if (!string.IsNullOrEmpty(e.ArtistName))
@@ -1293,8 +1323,11 @@ namespace Resono.Plugin.Filters
                 HasLyrics = true,
                 Tags = new[] { "ResonoVirtual" },
                 AlbumPrimaryImageTag = albumImageTag,
-                ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, albumImageTag } },
-                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new Dictionary<string, string>() } },
+                ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, trackImageTag } },
+                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>>
+                {
+                    { ImageType.Primary, new Dictionary<string, string> { { trackImageTag, "eODJO}t7%MWBt79FWBIUayRj00ayxut7t7_3ofofWBWB%MayIUWBay" } } }
+                },
                 PrimaryImageAspectRatio = 1.0,
                 AlbumId = e.AlbumId,
                 ParentId = e.AlbumId,

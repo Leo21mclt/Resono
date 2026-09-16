@@ -1,29 +1,40 @@
 services:
+  resono-plugin-init:
+    image: alpine:latest
+    container_name: resono-plugin-init
+    volumes:
+      - ${JELLYFIN_CONFIG_DIR:-./config/jellyfin}/plugins/Resono:/target
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mkdir -p /target
+        echo "[Resono] Checking for Resono.Plugin.dll..."
+        if [ ! -f /target/Resono.Plugin.dll ] || [ "$$RESONO_AUTO_UPDATE_PLUGIN" = "true" ]; then
+          echo "[Resono] Downloading latest Resono.Plugin.dll..."
+          wget -qO /target/Resono.Plugin.dll https://raw.githubusercontent.com/Leo21mclt/Resono/main/resono-gateway/plugin/Resono.Plugin.dll
+          chmod 755 /target/Resono.Plugin.dll
+          echo "[Resono] Plugin installed successfully to /config/plugins/Resono/Resono.Plugin.dll"
+        else
+          echo "[Resono] Plugin already present at /config/plugins/Resono/Resono.Plugin.dll"
+        fi
+    restart: "no"
+
   jellyfin:
     image: jellyfin/jellyfin:latest
     container_name: jellyfin
+    restart: unless-stopped
+    depends_on:
+      resono-plugin-init:
+        condition: service_completed_successfully
+      resono-gateway:
+        condition: service_healthy
     ports:
       - "8096:8096"
     volumes:
       - ${JELLYFIN_CONFIG_DIR:-./config/jellyfin}:/config
       - ${JELLYFIN_CACHE_DIR:-./cache/jellyfin}:/cache
       - ${JELLYFIN_MEDIA_DIR:-./media/music}:/media/music
-    restart: unless-stopped
-
-#  slskd:
-#    image: slskd/slskd:latest
-#    container_name: slskd
-#    restart: unless-stopped
-#    environment:
-#      - SLSKD_NO_AUTH=true
-#      - SLSKD_SLSK_USERNAME=${SLSKD_SLSK_USERNAME:-}
-#      - SLSKD_SLSK_PASSWORD=${SLSKD_SLSK_PASSWORD:-}
-#    volumes:
-#      - slskd-config:/app
-#      - slskd-downloads:/app/downloads
-#    ports:
-#      - "5030:5030"
-#      - "2234:2234"
 
   resono-gateway:
     build:
@@ -35,7 +46,7 @@ services:
     environment:
       - RESONO_HOST=0.0.0.0
       - RESONO_PORT=8080
-      - RESONO_MAX_CACHE_SIZE_GB=${RESONO_MAX_CACHE_SIZE_GB:-15.0}
+      - RESONO_MAX_CACHE_SIZE_GB=${RESONO_MAX_CACHE_SIZE_GB:-25.0}
       - RESONO_MIN_FREE_DISK_GB=${RESONO_MIN_FREE_DISK_GB:-10.0}
       - RESONO_MATCHER_CONFIDENCE_THRESHOLD=${RESONO_MATCHER_CONFIDENCE_THRESHOLD:-0.80}
       - RESONO_DEEZER_ARL=${RESONO_DEEZER_ARL:-}
@@ -58,3 +69,4 @@ services:
 volumes:
   resono-data:
   resono-cache:
+

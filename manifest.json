@@ -1,19 +1,19 @@
-﻿[
+[
   {
     "guid": "76824f11-0cb1-4fa3-80b6-71d53344b5a3",
     "name": "Resono Virtual Music",
-    "description": "Stream and discover unlimited high-fidelity music with synchronized karaoke lyrics, lossless Soulseek acquisition, and Apple Music/Deezer metadata directly inside Jellyfin.",
-    "overview": "Self-hosted high-fidelity virtual music streaming & discovery plugin powered by Soulseek and public catalog APIs.",
+    "description": "Stream and discover unlimited high-fidelity music with synchronized lyrics, lossless acquisition, and Deezer/Apple Music catalog integration directly inside Jellyfin.",
+    "overview": "Self-hosted high-fidelity virtual music streaming & discovery plugin for Jellyfin.",
     "owner": "Leo21mclt",
-    "category": "LiveTV",
+    "category": "Music",
     "versions": [
       {
         "version": "1.0.0.0",
-        "changelog": "Initial public release: lossless Soulseek acquisition, instant hybrid streaming, synchronized lyrics, Spotify-like artist discography, and multi-country top charts.",
+        "changelog": "Initial public release: lossless streaming, synchronized lyrics, complete artist discographies, and full Discrete iOS 18+ client artwork and metadata support.",
         "targetAbi": "10.9.0.0",
         "sourceUrl": "https://raw.githubusercontent.com/Leo21mclt/Resono/main/resono-gateway/plugin/Resono.Plugin.dll",
-        "checksum": "",
-        "timestamp": "2026-09-13T20:00:00Z"
+        "checksum": "6c51f74ff0f230771260bc5613e2d6ee",
+        "timestamp": "2026-09-16T21:00:00Z"
       }
     ]
   }
