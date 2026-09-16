@@ -30,7 +30,7 @@ namespace Resono.Plugin.Services
             public Guid? AlbumId { get; set; }
             public Guid? ArtistId { get; set; }
             public int? ProductionYear { get; set; }
-            public DateTimeOffset? PremiereDate { get; set; }
+            public DateTime? PremiereDate { get; set; }
             public List<string>? Genres { get; set; }
             public long LastAccessedTicks { get; set; } = DateTime.UtcNow.Ticks;
         }

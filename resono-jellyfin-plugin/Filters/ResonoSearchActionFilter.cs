@@ -501,8 +501,8 @@ namespace Resono.Plugin.Filters
                             : (!string.IsNullOrEmpty(al.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", al.ArtistName) : (Guid?)null);
 
                         int? albYear = al.ProductionYear;
-                        DateTimeOffset? albDate = null;
-                        if (!string.IsNullOrEmpty(al.ReleaseDate) && DateTimeOffset.TryParse(al.ReleaseDate, out var parsedDate))
+                        DateTime? albDate = null;
+                        if (!string.IsNullOrEmpty(al.ReleaseDate) && DateTime.TryParse(al.ReleaseDate, out var parsedDate))
                         {
                             albDate = parsedDate;
                             albYear ??= parsedDate.Year;

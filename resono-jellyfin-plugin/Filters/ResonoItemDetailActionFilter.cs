@@ -1423,7 +1423,7 @@ namespace Resono.Plugin.Filters
                 if (!string.IsNullOrEmpty(albumData.ImageUrl)) albumEntry.ImageUrl = albumData.ImageUrl;
                 if (albumData.ProductionYear.HasValue) albumEntry.ProductionYear = albumData.ProductionYear;
                 if (albumData.Genres != null && albumData.Genres.Count > 0) albumEntry.Genres = albumData.Genres;
-                if (!string.IsNullOrEmpty(albumData.ReleaseDate) && DateTimeOffset.TryParse(albumData.ReleaseDate, out var albDto))
+                if (!string.IsNullOrEmpty(albumData.ReleaseDate) && DateTime.TryParse(albumData.ReleaseDate, out var albDto))
                 {
                     albumEntry.PremiereDate = albDto;
                     if (!albumEntry.ProductionYear.HasValue) albumEntry.ProductionYear = albDto.Year;
@@ -1529,8 +1529,8 @@ namespace Resono.Plugin.Filters
                     {
                         var artId = !string.IsNullOrEmpty(alb.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", alb.ArtistName) : (Guid?)null;
                         int? prodYear = alb.ProductionYear;
-                        DateTimeOffset? premDate = null;
-                        if (!string.IsNullOrEmpty(alb.ReleaseDate) && DateTimeOffset.TryParse(alb.ReleaseDate, out var albDto))
+                        DateTime? premDate = null;
+                        if (!string.IsNullOrEmpty(alb.ReleaseDate) && DateTime.TryParse(alb.ReleaseDate, out var albDto))
                         {
                             premDate = albDto;
                             prodYear ??= albDto.Year;
@@ -1573,8 +1573,8 @@ namespace Resono.Plugin.Filters
                                 {
                                     var artId = !string.IsNullOrEmpty(fullAlb.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", fullAlb.ArtistName) : (Guid?)null;
                                     int? pYear = fullAlb.ProductionYear;
-                                    DateTimeOffset? pDate = null;
-                                    if (!string.IsNullOrEmpty(fullAlb.ReleaseDate) && DateTimeOffset.TryParse(fullAlb.ReleaseDate, out var dtoVal))
+                                    DateTime? pDate = null;
+                                    if (!string.IsNullOrEmpty(fullAlb.ReleaseDate) && DateTime.TryParse(fullAlb.ReleaseDate, out var dtoVal))
                                     {
                                         pDate = dtoVal;
                                         pYear ??= dtoVal.Year;
