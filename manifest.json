@@ -12,7 +12,7 @@
         "changelog": "Initial public release: lossless streaming, synchronized lyrics, complete artist discographies, and full Discrete iOS 18+ client artwork and metadata support.",
         "targetAbi": "10.9.0.0",
         "sourceUrl": "https://raw.githubusercontent.com/Leo21mclt/Resono/main/resono-gateway/plugin/Resono.Plugin.dll",
-        "checksum": "6c51f74ff0f230771260bc5613e2d6ee",
+        "checksum": "2af89dd669e182ddd12a8967205be3ed",
         "timestamp": "2026-09-16T21:00:00Z"
       }
     ]
