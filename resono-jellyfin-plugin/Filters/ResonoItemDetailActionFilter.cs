@@ -221,8 +221,7 @@ namespace Resono.Plugin.Filters
                     ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                     {
                         Items = similar.ToArray(),
-                        TotalRecordCount = similar.Count,
-                        StartIndex = 0
+                        TotalRecordCount = similar.Count
                     });
                     return;
                 }
@@ -327,8 +326,7 @@ namespace Resono.Plugin.Filters
                     ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                     {
                         Items = tracks.ToArray(),
-                        TotalRecordCount = tracks.Count,
-                        StartIndex = 0
+                        TotalRecordCount = tracks.Count
                     });
                     return;
                 }
@@ -365,8 +363,7 @@ namespace Resono.Plugin.Filters
                         ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                         {
                             Items = matchingItems.ToArray(),
-                            TotalRecordCount = matchingItems.Count,
-                            StartIndex = 0
+                            TotalRecordCount = matchingItems.Count
                         });
                         return;
                     }
@@ -385,8 +382,7 @@ namespace Resono.Plugin.Filters
                                 ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                                 {
                                     Items = tracks.ToArray(),
-                                    TotalRecordCount = tracks.Count,
-                                    StartIndex = 0
+                                    TotalRecordCount = tracks.Count
                                 });
                                 return;
                             }
@@ -407,8 +403,7 @@ namespace Resono.Plugin.Filters
                                 ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                                 {
                                     Items = tracks.ToArray(),
-                                    TotalRecordCount = tracks.Count,
-                                    StartIndex = 0
+                                    TotalRecordCount = tracks.Count
                                 });
                                 return;
                             }
@@ -422,8 +417,7 @@ namespace Resono.Plugin.Filters
                                 ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                                 {
                                     Items = albums.ToArray(),
-                                    TotalRecordCount = albums.Count,
-                                    StartIndex = 0
+                                    TotalRecordCount = albums.Count
                                 });
                                 return;
                             }
@@ -432,8 +426,7 @@ namespace Resono.Plugin.Filters
                             ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                             {
                                 Items = tracks.ToArray(),
-                                TotalRecordCount = tracks.Count,
-                                StartIndex = 0
+                                TotalRecordCount = tracks.Count
                             });
                             return;
                         }
@@ -443,8 +436,7 @@ namespace Resono.Plugin.Filters
                             ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                             {
                                 Items = tracks.ToArray(),
-                                TotalRecordCount = tracks.Count,
-                                StartIndex = 0
+                                TotalRecordCount = tracks.Count
                             });
                             return;
                         }
@@ -505,8 +497,7 @@ namespace Resono.Plugin.Filters
                                 ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                                 {
                                     Items = albums.ToArray(),
-                                    TotalRecordCount = albums.Count,
-                                    StartIndex = 0
+                                    TotalRecordCount = albums.Count
                                 });
                                 return;
                             }
@@ -519,8 +510,7 @@ namespace Resono.Plugin.Filters
                                 ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                                 {
                                     Items = tracks.ToArray(),
-                                    TotalRecordCount = tracks.Count,
-                                    StartIndex = 0
+                                    TotalRecordCount = tracks.Count
                                 });
                                 return;
                             }
