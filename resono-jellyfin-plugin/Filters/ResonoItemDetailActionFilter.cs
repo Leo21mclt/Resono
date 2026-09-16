@@ -132,11 +132,11 @@ namespace Resono.Plugin.Filters
                         try
                         {
                             var baseItem = _libraryManager.GetItemById(lyricItemId);
-                            if (baseItem is MediaBrowser.Controller.Entities.Audio audioItem)
+                            if (baseItem is MediaBrowser.Controller.Entities.Audio.Audio audioItem)
                             {
-                                var artName = (audioItem.Artists != null && audioItem.Artists.Count > 0)
-                                    ? audioItem.Artists[0]
-                                    : (audioItem.AlbumArtist ?? string.Empty);
+                                var artName = audioItem.Artists?.FirstOrDefault()
+                                    ?? audioItem.AlbumArtists?.FirstOrDefault()
+                                    ?? string.Empty;
                                 var durMs = audioItem.RunTimeTicks.HasValue ? (int)(audioItem.RunTimeTicks.Value / 10000L) : (int?)null;
                                 lyricEntry = new ResonoItemCache.Entry
                                 {
