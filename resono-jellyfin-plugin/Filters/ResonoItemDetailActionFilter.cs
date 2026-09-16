@@ -158,7 +158,7 @@ namespace Resono.Plugin.Filters
 
                     if (lyricEntry != null)
                     {
-                        var lyricDto = await FetchSyncedLyricsAsync(lyricEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        var lyricDto = await FetchSyncedLyricsAsync(lyricItemId, lyricEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                         if (lyricDto != null)
                         {
                             _logger.LogInformation("[Resono-Lyrics] Returning {Count} lyric lines for {Artist} - {Title}", lyricDto.Lyrics.Count, lyricEntry.ArtistName, lyricEntry.Name);
@@ -1558,7 +1558,7 @@ namespace Resono.Plugin.Filters
             return null;
         }
 
-        private async Task<LyricDto?> FetchSyncedLyricsAsync(ResonoItemCache.Entry trackEntry, CancellationToken ct)
+        private async Task<LyricDto?> FetchSyncedLyricsAsync(Guid trackId, ResonoItemCache.Entry trackEntry, CancellationToken ct)
         {
             try
             {
@@ -1572,6 +1572,10 @@ namespace Resono.Plugin.Filters
                 {
                     url += $"&album={Uri.EscapeDataString(trackEntry.AlbumName)}";
                 }
+                if (!string.IsNullOrEmpty(trackEntry.SpotifyId))
+                {
+                    url += $"&track_id={Uri.EscapeDataString(trackEntry.SpotifyId)}";
+                }
 
                 _logger.LogInformation("[Resono-Lyrics] Querying gateway for lyrics: {Url}", url);
                 var client = _httpClientFactory.CreateClient();
@@ -1582,10 +1586,29 @@ namespace Resono.Plugin.Filters
                     return null;
                 }
 
+                // Write sidecar .lrc file if /data/music/resono exists
+                try
+                {
+                    var lrcText = !string.IsNullOrWhiteSpace(data.SyncedLyrics) ? data.SyncedLyrics : data.PlainLyrics;
+                    if (!string.IsNullOrWhiteSpace(lrcText))
+                    {
+                        const string lrcDir = "/data/music/resono";
+                        if (Directory.Exists(lrcDir))
+                        {
+                            File.WriteAllText(Path.Combine(lrcDir, $"{trackId:N}.lrc"), lrcText);
+                            if (!string.IsNullOrEmpty(trackEntry.CanonicalId) && Guid.TryParse(trackEntry.CanonicalId, out var cGuid) && cGuid != trackId)
+                            {
+                                File.WriteAllText(Path.Combine(lrcDir, $"{cGuid:N}.lrc"), lrcText);
+                            }
+                        }
+                    }
+                }
+                catch { }
+
                 var lines = new List<LyricLine>();
                 if (!string.IsNullOrWhiteSpace(data.SyncedLyrics))
                 {
-                    var regex = new Regex(@"\[(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?\](.*)");
+                    var regex = new Regex(@"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\](.*)");
                     foreach (var rawLine in data.SyncedLyrics.Split('\n'))
                     {
                         var match = regex.Match(rawLine.Trim());

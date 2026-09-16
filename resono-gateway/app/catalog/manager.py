@@ -406,12 +406,53 @@ class CatalogManager:
         return recommended_albums
 
 
-    async def get_lyrics(self, artist: str, title: str, album: str | None = None, duration_sec: int | None = None) -> dict | None:
-        cache_key = f"lyrics:{artist.lower()}:{title.lower()}"
+    async def get_lyrics(
+        self,
+        track_id: str | None = None,
+        artist: str = "",
+        title: str = "",
+        album: str | None = None,
+        duration_sec: int | None = None
+    ) -> dict | None:
+        clean_track_id = track_id.strip() if track_id else None
+        cache_key = f"lyrics:id:{clean_track_id.lower()}" if clean_track_id else f"lyrics:{artist.lower()}:{title.lower()}"
         if cache_key in self._cache:
             exp, cached = self._cache[cache_key]
             if time.time() < exp:
                 return cached
+
+        # 1. Deezer Native Lyrics (direct by track ID or resolved by search)
+        deezer_prov = self.providers.get("deezer")
+        if deezer_prov and hasattr(deezer_prov, "get_lyrics"):
+            target_id = clean_track_id
+            if not target_id and artist and title:
+                try:
+                    sr = await deezer_prov.search(f"{artist} {title}", limit=3)
+                    if sr and sr.tracks:
+                        target_id = sr.tracks[0].id
+                except Exception as ex:
+                    logger.debug(f"Deezer search for lyrics track ID failed: {ex}")
+
+            if target_id:
+                dz_lyrics = await deezer_prov.get_lyrics(target_id)
+                if dz_lyrics and (dz_lyrics.get("syncedLyrics") or dz_lyrics.get("plainLyrics")):
+                    self._cache[cache_key] = (time.time() + 86400, dz_lyrics)
+                    return dz_lyrics
+
+        # 2. Resolve metadata for LrcLib if missing
+        if not artist or not title:
+            if clean_track_id:
+                t = await self.get_track(clean_track_id)
+                if t:
+                    artist = t.artist_name
+                    title = t.title
+                    album = album or t.album_title
+                    duration_sec = duration_sec or (t.duration_ms // 1000 if t.duration_ms else None)
+
+        if not artist or not title:
+            return None
+
+        # 3. LrcLib fallback
         try:
             import httpx
             params = {"artist_name": artist, "track_name": title}
@@ -427,7 +468,7 @@ class CatalogManager:
                         self._cache[cache_key] = (time.time() + 86400, data)
                         return data
 
-                # Fallback to search endpoint if /api/get misses (e.g. minor duration difference or featured artists)
+                # Fallback to search endpoint if /api/get misses
                 clean_artist = artist.split("/")[0].split("&")[0].split(" feat")[0].strip()
                 clean_title = title.split(" (")[0].split(" - ")[0].strip()
 

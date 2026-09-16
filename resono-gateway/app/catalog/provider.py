@@ -27,3 +27,7 @@ class CatalogProvider(ABC):
     async def get_track(self, track_id: str) -> CatalogTrack | None:
         """Get track metadata"""
         pass
+
+    async def get_lyrics(self, track_id: str) -> dict | None:
+        """Get track lyrics (synced and/or plain)"""
+        return None

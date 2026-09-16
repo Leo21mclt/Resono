@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Net;
+using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
@@ -1203,6 +1204,17 @@ namespace Resono.Plugin.Filters
                         SampleRate = 44100,
                         Channels = 2,
                         ChannelLayout = "stereo"
+                    },
+                    new MediaBrowser.Model.Entities.MediaStream
+                    {
+                        Codec = "lrc",
+                        Type = MediaStreamType.Lyric,
+                        Index = 1,
+                        IsDefault = true,
+                        IsExternal = true,
+                        DeliveryMethod = SubtitleDeliveryMethod.External,
+                        DeliveryUrl = $"/Audio/{idStr}/Lyrics",
+                        Path = $"/data/music/resono/{idStr}.lrc"
                     }
                 },
                 RequiredHttpHeaders = new Dictionary<string, string>()

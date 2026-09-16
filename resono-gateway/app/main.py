@@ -594,13 +594,20 @@ async def jellyfin_get_chart_tracks(chart_id: str, limit: int = Query(50, ge=1, 
 
 @app.get("/jellyfin/lyrics")
 async def jellyfin_get_lyrics(
-    artist: str = Query(...),
-    title: str = Query(...),
+    artist: str = Query(""),
+    title: str = Query(""),
     album: str | None = Query(None),
-    duration: int | None = Query(None)
+    duration: int | None = Query(None),
+    track_id: str | None = Query(None)
 ):
-    """Deliver synced LRC lyrics from LrcLib with caching."""
-    lyrics = await catalog_manager.get_lyrics(artist, title, album, duration)
+    """Deliver synced LRC lyrics from Deezer Native & LrcLib with caching."""
+    lyrics = await catalog_manager.get_lyrics(
+        track_id=track_id,
+        artist=artist,
+        title=title,
+        album=album,
+        duration_sec=duration
+    )
     if not lyrics:
         raise HTTPException(status_code=404, detail="Lyrics not found")
     return lyrics

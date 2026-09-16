@@ -419,7 +419,7 @@ class DeezerProvider(CatalogProvider):
             return CatalogSearchResult()
 
     async def get_artist(self, artist_id: str) -> CatalogArtist | None:
-        raw_id = artist_id.replace("deezer:artist:", "").strip()
+        raw_id = artist_id.split(":")[-1].strip()
         if not raw_id.isdigit():
             artists = await self.search_artists(raw_id, limit=1)
             if artists:
@@ -517,7 +517,7 @@ class DeezerProvider(CatalogProvider):
             return []
 
     async def _resolve_artist_id(self, artist_id: str, name: str | None = None) -> str | None:
-        clean = artist_id.replace("deezer:artist:", "").strip()
+        clean = artist_id.split(":")[-1].strip()
         if clean.isdigit():
             return clean
         query = name or (clean.split(":")[-1] if ":" in clean else clean)
@@ -613,7 +613,7 @@ class DeezerProvider(CatalogProvider):
             return []
 
     async def get_album(self, album_id: str) -> tuple[CatalogAlbum, list[CatalogTrack]] | None:
-        raw_id = album_id.replace("deezer:album:", "")
+        raw_id = album_id.split(":")[-1].strip()
         try:
             async with self._get_client() as client:
                 res = await client.get(f"/album/{raw_id}")
@@ -678,7 +678,7 @@ class DeezerProvider(CatalogProvider):
             return None
 
     async def get_track(self, track_id: str) -> CatalogTrack | None:
-        raw_id = track_id.replace("deezer:track:", "")
+        raw_id = track_id.split(":")[-1].strip()
         try:
             async with self._get_client() as client:
                 res = await client.get(f"/track/{raw_id}")
@@ -814,4 +814,78 @@ class DeezerProvider(CatalogProvider):
         except Exception as e:
             logger.error(f"Deezer get_chart_playlists failed for country '{country}': {e}")
             return []
+
+    async def get_lyrics(self, track_id: str) -> dict | None:
+        raw_id = track_id.split(":")[-1].strip()
+        if not raw_id:
+            return None
+        token = await self._get_anonymous_jwt()
+        if not token:
+            return None
+
+        query = """
+        query GetLyrics($trackId: String!) {
+          track(trackId: $trackId) {
+            id
+            title
+            hasSynchronizedLyrics
+            lyrics {
+              id
+              text
+              synchronizedLines {
+                line
+                milliseconds
+                duration
+              }
+            }
+          }
+        }
+        """
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                res = await client.post(
+                    "https://pipe.deezer.com/api",
+                    json={"query": query, "variables": {"trackId": raw_id}},
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+                        "Origin": "https://www.deezer.com",
+                        "Referer": "https://www.deezer.com/",
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    }
+                )
+                if res.status_code != 200:
+                    return None
+                data = res.json()
+
+            track_data = data.get("data", {}).get("track", {})
+            if not track_data:
+                return None
+            lyrics_data = track_data.get("lyrics")
+            if not lyrics_data:
+                return None
+
+            plain_text = lyrics_data.get("text") or None
+            sync_lines = lyrics_data.get("synchronizedLines") or []
+            lrc_lines = []
+            for sl in sync_lines:
+                ms = int(sl.get("milliseconds", 0))
+                m = ms // 60000
+                s = (ms % 60000) // 1000
+                cs = (ms % 1000) // 10
+                lrc_lines.append(f"[{m:02d}:{s:02d}.{cs:02d}]{sl.get('line', '')}")
+
+            synced_lrc = "\n".join(lrc_lines) if lrc_lines else None
+            if not synced_lrc and not plain_text:
+                return None
+
+            return {
+                "trackName": track_data.get("title"),
+                "plainLyrics": plain_text,
+                "syncedLyrics": synced_lrc,
+                "source": "deezer"
+            }
+        except Exception as e:
+            logger.warning(f"Deezer get_lyrics failed for track '{track_id}': {e}")
+            return None
 
