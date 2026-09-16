@@ -47,8 +47,8 @@ class DeezerProvider(CatalogProvider):
                     return []
 
                 # Query tracks and albums concurrently alongside smart artist search
-                track_task = fetch_endpoint("/search", {"q": clean_q, "limit": limit})
-                album_task = fetch_endpoint("/search/album", {"q": clean_q, "limit": limit})
+                track_task = fetch_endpoint("/search", {"q": clean_q, "limit": limit, "order": "RANKING"})
+                album_task = fetch_endpoint("/search/album", {"q": clean_q, "limit": limit, "order": "RANKING"})
 
                 artists_list, track_items, album_items = await asyncio.gather(
                     artist_task, track_task, album_task
@@ -67,7 +67,7 @@ class DeezerProvider(CatalogProvider):
             # 2. Process dedicated Album search results (ensuring matching albums appear prominently)
             album_spam_terms = {"tribute", "karaoke", "piano cover", "instrumental version", "relaxing", "sleep music"}
             top_artist_name = artists_list[0].name.lower() if artists_list else ""
-            is_artist_query = (clean_q.lower() == top_artist_name) or (len(artists_list) > 0 and artists_list[0].name.lower() in clean_q.lower())
+            is_artist_query = (clean_q.lower() == top_artist_name)
 
             filtered_albums = []
             for it in album_items:
@@ -238,8 +238,13 @@ class DeezerProvider(CatalogProvider):
                     continue
 
                 is_exact = (name_lower == clean_q)
-                # If not exact match, require at least 5000 fans to prevent spam/typos
-                if not is_exact and nb_fan < 5000:
+                query_words = [w for w in clean_q.split() if len(w) > 2]
+                contains_query = (clean_q in name_lower) or (len(query_words) > 0 and all(w in name_lower for w in query_words))
+
+                # Require that artist actually matches the query:
+                # 1. Exact match or name contains query / all query words -> keep!
+                # 2. If it does not contain query words, reject it (avoids Deezer fuzzy typos like Halestorm for Hadestown)
+                if not (contains_query or is_exact):
                     continue
 
                 valid_artists.append({
@@ -257,9 +262,11 @@ class DeezerProvider(CatalogProvider):
             valid_artists.sort(key=lambda x: (not x["is_exact"], -x["nb_fan"]))
             results = [x["artist"] for x in valid_artists[:limit]]
 
-            # If fewer than 4 artists and the top artist is a major verified star (>= 50,000 fans),
-            # append related artists matching Deezer/Spotify UI behavior
-            if len(results) < 4 and valid_artists and valid_artists[0]["nb_fan"] >= 50000:
+            # Only append related artists if:
+            # 1. We have results, and the top artist is an EXACT match (e.g. searching "taylor swift" or "coldplay")
+            # 2. Top artist is a major superstar (>= 50,000 fans)
+            # 3. We have fewer than 4 artists
+            if len(results) < 4 and valid_artists and valid_artists[0]["is_exact"] and valid_artists[0]["nb_fan"] >= 50000:
                 top_id = valid_artists[0]["raw_id"]
                 try:
                     related = await self.get_artist_related(top_id, limit=limit - len(results) + 2)

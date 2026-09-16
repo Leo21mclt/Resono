@@ -364,8 +364,38 @@ class CatalogManager:
                 res = await client.get("https://lrclib.net/api/get", params=params)
                 if res.status_code == 200:
                     data = res.json()
-                    self._cache[cache_key] = (time.time() + 86400, data)
-                    return data
+                    if data.get("syncedLyrics") or data.get("plainLyrics"):
+                        self._cache[cache_key] = (time.time() + 86400, data)
+                        return data
+
+                # Fallback to search endpoint if /api/get misses (e.g. minor duration difference or featured artists)
+                clean_artist = artist.split("/")[0].split("&")[0].split(" feat")[0].strip()
+                clean_title = title.split(" (")[0].split(" - ")[0].strip()
+
+                search_queries = [
+                    f"{artist} {title}",
+                    f"{clean_artist} {clean_title}",
+                ]
+                if album and album.lower() not in artist.lower():
+                    clean_album = album.split(" (")[0].strip()
+                    search_queries.append(f"{clean_title} {clean_album}")
+
+                for sq in search_queries:
+                    sq = sq.strip()
+                    if not sq:
+                        continue
+                    search_res = await client.get("https://lrclib.net/api/search", params={"q": sq})
+                    if search_res.status_code == 200:
+                        items = search_res.json()
+                        candidates = [x for x in items if (x.get("syncedLyrics") or x.get("plainLyrics"))]
+                        if candidates:
+                            if duration_sec:
+                                candidates.sort(key=lambda x: (not bool(x.get("syncedLyrics")), abs((x.get("duration") or 0) - duration_sec)))
+                            else:
+                                candidates.sort(key=lambda x: not bool(x.get("syncedLyrics")))
+                            data = candidates[0]
+                            self._cache[cache_key] = (time.time() + 86400, data)
+                            return data
         except Exception as e:
             logger.warning(f"LrcLib fetch error for '{artist} - {title}': {e}")
         return None

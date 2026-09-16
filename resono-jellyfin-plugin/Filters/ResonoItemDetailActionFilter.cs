@@ -182,13 +182,54 @@ namespace Resono.Plugin.Filters
             // 1. Synced Karaoke Lyrics (/Audio/{id}/Lyrics or /Items/{id}/Lyrics)
             if (path.IndexOf("/Lyrics", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                if (TryExtractGuidFromPath(path, out var lyricItemId) && _cache.TryGet(lyricItemId, out var lyricEntry) && lyricEntry is { Kind: "track" })
+                if (TryExtractGuidFromPath(path, out var lyricItemId))
                 {
-                    var lyricDto = await FetchSyncedLyricsAsync(lyricEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
-                    if (lyricDto != null)
+                    if (!_cache.TryGet(lyricItemId, out var lyricEntry) || lyricEntry is not { Kind: "track" })
                     {
-                        ctx.Result = new OkObjectResult(lyricDto);
-                        return;
+                        var cfg = Plugin.Instance?.Configuration;
+                        var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg?.GatewayUrl);
+                        try
+                        {
+                            var metaClient = _httpClientFactory.CreateClient();
+                            var trackInfo = await metaClient.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{lyricItemId:N}", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                            if (trackInfo != null)
+                            {
+                                var albId = !string.IsNullOrEmpty(trackInfo.AlbumId) ? ResonoItemCache.StubGuid("dz-album", trackInfo.AlbumId) : (Guid?)null;
+                                var artId = !string.IsNullOrEmpty(trackInfo.ArtistId) ? ResonoItemCache.StubGuid("dz-artist", trackInfo.ArtistId) : (Guid?)null;
+
+                                lyricEntry = new ResonoItemCache.Entry
+                                {
+                                    Kind = "track",
+                                    Name = trackInfo.Name,
+                                    ArtistName = trackInfo.ArtistName,
+                                    AlbumName = trackInfo.AlbumName,
+                                    SpotifyId = trackInfo.Id,
+                                    CanonicalId = trackInfo.CanonicalId,
+                                    ImageUrl = trackInfo.ImageUrl,
+                                    DurationMs = trackInfo.DurationMs,
+                                    TrackNumber = trackInfo.TrackNumber,
+                                    DiscNumber = trackInfo.DiscNumber,
+                                    StreamUrl = !string.IsNullOrEmpty(trackInfo.StreamUrl) ? $"{gatewayUrl}{trackInfo.StreamUrl}" : $"{gatewayUrl}/playback/{trackInfo.Id}",
+                                    AlbumId = albId,
+                                    ArtistId = artId
+                                };
+                                _cache.Set(lyricItemId, lyricEntry);
+                            }
+                        }
+                        catch
+                        {
+                            // ignore, fallback handled below
+                        }
+                    }
+
+                    if (lyricEntry != null)
+                    {
+                        var lyricDto = await FetchSyncedLyricsAsync(lyricEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        if (lyricDto != null)
+                        {
+                            ctx.Result = new OkObjectResult(lyricDto);
+                            return;
+                        }
                     }
                 }
             }
@@ -1449,6 +1490,10 @@ namespace Resono.Plugin.Filters
                 var gatewayUrl = ResonoSearchActionFilter.GetEffectiveGatewayUrl(cfg.GatewayUrl);
                 var durSec = trackEntry.DurationMs.HasValue ? trackEntry.DurationMs.Value / 1000 : 0;
                 var url = $"{gatewayUrl}/jellyfin/lyrics?artist={Uri.EscapeDataString(trackEntry.ArtistName)}&title={Uri.EscapeDataString(trackEntry.Name)}&duration={durSec}";
+                if (!string.IsNullOrEmpty(trackEntry.AlbumName))
+                {
+                    url += $"&album={Uri.EscapeDataString(trackEntry.AlbumName)}";
+                }
 
                 var client = _httpClientFactory.CreateClient();
                 var data = await client.GetFromJsonAsync<LrcLibResponse>(url, ct).ConfigureAwait(false);

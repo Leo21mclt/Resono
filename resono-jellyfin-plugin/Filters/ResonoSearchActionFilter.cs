@@ -246,9 +246,6 @@ namespace Resono.Plugin.Filters
 
         private void AugmentItems(QueryResult<BaseItemDto> qr, GatewaySearchResponse data, string gatewayUrl, HttpContext httpCtx)
         {
-            var existingIds = qr.Items.Select(i => i.Id).ToHashSet();
-            var additions = new List<BaseItemDto>();
-
             var requestedTypes = ExtractIncludeItemTypes(httpCtx);
             bool hasTypeFilter = requestedTypes.Count > 0;
             bool wantArtists = !hasTypeFilter || requestedTypes.Contains("MusicArtist") || requestedTypes.Contains("Artist");
@@ -266,6 +263,9 @@ namespace Resono.Plugin.Filters
                 wantTracks = false;
             }
 
+            var gatewayItems = new List<BaseItemDto>();
+            var gatewayIds = new HashSet<Guid>();
+
             // 1. Add Artists
             if (wantArtists && data.Artists != null)
             {
@@ -281,9 +281,9 @@ namespace Resono.Plugin.Filters
                     };
                     _cache.Set(id, entry);
 
-                    if (existingIds.Add(id))
+                    if (gatewayIds.Add(id))
                     {
-                        additions.Add(BuildArtistDto(id, entry));
+                        gatewayItems.Add(BuildArtistDto(id, entry));
                     }
                 }
             }
@@ -323,9 +323,9 @@ namespace Resono.Plugin.Filters
                     };
                     _cache.Set(id, entry);
 
-                    if (existingIds.Add(id))
+                    if (gatewayIds.Add(id))
                     {
-                        additions.Add(BuildAlbumDto(id, entry));
+                        gatewayItems.Add(BuildAlbumDto(id, entry));
                     }
                 }
             }
@@ -381,38 +381,40 @@ namespace Resono.Plugin.Filters
                         _registrar.RegisterArtist(artistId.Value, t.ArtistName);
                     }
 
-                    if (existingIds.Add(id))
-                    {
-                        var streamUrl = !string.IsNullOrEmpty(t.StreamUrl)
-                            ? $"{gatewayUrl}{t.StreamUrl}"
-                            : $"{gatewayUrl}/playback/{t.Id}";
+                    var streamUrl = !string.IsNullOrEmpty(t.StreamUrl)
+                        ? $"{gatewayUrl}{t.StreamUrl}"
+                        : $"{gatewayUrl}/playback/{t.Id}";
 
-                        var entry = new ResonoItemCache.Entry
-                        {
-                            Kind = "track",
-                            Name = t.Name,
-                            ArtistName = t.ArtistName,
-                            AlbumName = t.AlbumName,
-                            SpotifyId = t.Id,
-                            CanonicalId = t.CanonicalId,
-                            ImageUrl = t.ImageUrl,
-                            DurationMs = t.DurationMs,
-                            TrackNumber = t.TrackNumber,
-                            DiscNumber = t.DiscNumber,
-                            StreamUrl = streamUrl,
-                            AlbumId = albumId,
-                            ArtistId = artistId
-                        };
-                        _cache.Set(id, entry);
-                        _registrar.RegisterTrack(id, entry);
-                        additions.Add(BuildTrackDto(id, entry));
+                    var entry = new ResonoItemCache.Entry
+                    {
+                        Kind = "track",
+                        Name = t.Name,
+                        ArtistName = t.ArtistName,
+                        AlbumName = t.AlbumName,
+                        SpotifyId = t.Id,
+                        CanonicalId = t.CanonicalId,
+                        ImageUrl = t.ImageUrl,
+                        DurationMs = t.DurationMs,
+                        TrackNumber = t.TrackNumber,
+                        DiscNumber = t.DiscNumber,
+                        StreamUrl = streamUrl,
+                        AlbumId = albumId,
+                        ArtistId = artistId
+                    };
+                    _cache.Set(id, entry);
+                    _registrar.RegisterTrack(id, entry);
+
+                    if (gatewayIds.Add(id))
+                    {
+                        gatewayItems.Add(BuildTrackDto(id, entry));
                     }
                 }
             }
 
-            if (additions.Count > 0)
+            if (gatewayItems.Count > 0)
             {
-                var combined = qr.Items.Concat(additions).ToArray();
+                var localItems = qr.Items.Where(i => !gatewayIds.Contains(i.Id)).ToList();
+                var combined = gatewayItems.Concat(localItems).ToArray();
                 qr.Items = combined;
                 qr.TotalRecordCount = combined.Length;
             }
@@ -420,8 +422,8 @@ namespace Resono.Plugin.Filters
 
         private SearchHintResult AugmentHints(SearchHintResult sr, GatewaySearchResponse data, string gatewayUrl)
         {
-            var existingIds = (sr.SearchHints ?? Array.Empty<SearchHint>()).Select(h => h.Id).ToHashSet();
-            var additions = new List<SearchHint>();
+            var gatewayHints = new List<SearchHint>();
+            var gatewayIds = new HashSet<Guid>();
 
             // 1. Artists
             if (data.Artists != null)
@@ -442,9 +444,9 @@ namespace Resono.Plugin.Filters
                         _registrar.RegisterArtist(id, a.Name);
                     }
 
-                    if (existingIds.Add(id))
+                    if (gatewayIds.Add(id))
                     {
-                        additions.Add(new SearchHint
+                        gatewayHints.Add(new SearchHint
                         {
                             Id = id,
                             Name = a.Name,
@@ -483,9 +485,9 @@ namespace Resono.Plugin.Filters
                         _registrar.RegisterAlbum(id, al.Name, al.ArtistName);
                     }
 
-                    if (existingIds.Add(id))
+                    if (gatewayIds.Add(id))
                     {
-                        additions.Add(new SearchHint
+                        gatewayHints.Add(new SearchHint
                         {
                             Id = id,
                             Name = al.Name,
@@ -566,9 +568,9 @@ namespace Resono.Plugin.Filters
                     _cache.Set(id, entry);
                     _registrar.RegisterTrack(id, entry);
 
-                    if (existingIds.Add(id))
+                    if (gatewayIds.Add(id))
                     {
-                        additions.Add(new SearchHint
+                        gatewayHints.Add(new SearchHint
                         {
                             Id = id,
                             Name = t.Name,
@@ -586,9 +588,10 @@ namespace Resono.Plugin.Filters
                 }
             }
 
-            if (additions.Count == 0) return sr;
+            if (gatewayHints.Count == 0) return sr;
 
-            var combined = (sr.SearchHints ?? Array.Empty<SearchHint>()).Concat(additions).ToArray();
+            var localHints = (sr.SearchHints ?? Array.Empty<SearchHint>()).Where(h => !gatewayIds.Contains(h.Id));
+            var combined = gatewayHints.Concat(localHints).ToArray();
             return new SearchHintResult(combined, combined.Length);
         }
 
@@ -1175,6 +1178,7 @@ namespace Resono.Plugin.Filters
                 Name = e.Name ?? "(unknown track)",
                 Type = BaseItemKind.Audio,
                 MediaType = MediaType.Audio,
+                HasLyrics = true,
                 Tags = new[] { "ResonoVirtual" },
                 AlbumPrimaryImageTag = albumImageTag,
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
