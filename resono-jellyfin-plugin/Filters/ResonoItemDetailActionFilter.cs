@@ -667,108 +667,223 @@ namespace Resono.Plugin.Filters
             // Universal Enrichment: Ensure any BaseItemDto returned by Jellyfin has complete metadata and ImageTags
             if (ctx.Result is ObjectResult objRes)
             {
-                if (objRes.Value is BaseItemDto singleDto)
-                {
-                    EnrichBaseItemDto(singleDto);
-                }
-                else if (objRes.Value is BaseItemDto[] dtos)
-                {
-                    foreach (var d in dtos) EnrichBaseItemDto(d);
-                }
-                else if (objRes.Value is QueryResult<BaseItemDto> qr && qr.Items != null)
-                {
-                    foreach (var d in qr.Items) EnrichBaseItemDto(d);
-                }
-                else if (objRes.Value is IEnumerable<BaseItemDto> enumDtos)
-                {
-                    foreach (var d in enumDtos) EnrichBaseItemDto(d);
-                }
+                EnrichResultValue(objRes.Value);
+            }
+            else if (ctx.Result is JsonResult jsonRes)
+            {
+                EnrichResultValue(jsonRes.Value);
             }
 
             await next().ConfigureAwait(false);
         }
 
-        private void EnrichBaseItemDto(BaseItemDto dto)
+        private void EnrichResultValue(object? val)
+        {
+            if (val == null) return;
+            if (val is BaseItemDto singleDto)
+            {
+                EnrichBaseItemDto(singleDto);
+            }
+            else if (val is BaseItemDto[] dtos)
+            {
+                foreach (var d in dtos) EnrichBaseItemDto(d);
+            }
+            else if (val is QueryResult<BaseItemDto> qr && qr.Items != null)
+            {
+                foreach (var d in qr.Items) EnrichBaseItemDto(d);
+            }
+            else if (val is IEnumerable<BaseItemDto> enumDtos)
+            {
+                foreach (var d in enumDtos) EnrichBaseItemDto(d);
+            }
+        }
+
+        public void EnrichBaseItemDto(BaseItemDto dto)
         {
             if (dto == null) return;
 
+            // Only process Music items (Audio, MusicAlbum, MusicArtist).
+            // Normal movies, series, episodes, etc. MUST remain completely untouched!
+            bool isMusic = dto.Type == BaseItemKind.Audio
+                || dto.Type == BaseItemKind.MusicAlbum
+                || dto.Type == BaseItemKind.MusicArtist
+                || dto.MediaType == MediaType.Audio;
+
+            if (!isMusic) return;
+
             _cache.TryGet(dto.Id, out var entry);
 
-            // 1. Ensure ImageTags has Primary if there is any image available
-            if (dto.ImageTags == null || !dto.ImageTags.ContainsKey(ImageType.Primary))
+            MediaBrowser.Controller.Entities.BaseItem? libItem = null;
+            if (_libraryManager != null)
             {
-                bool hasImage = !string.IsNullOrEmpty(entry?.ImageUrl);
-                if (!hasImage && _libraryManager != null)
-                {
-                    try
-                    {
-                        var libItem = _libraryManager.GetItemById(dto.Id);
-                        if (libItem != null)
-                        {
-                            var pPath = libItem.GetImagePath(ImageType.Primary, 0);
-                            if (!string.IsNullOrEmpty(pPath)) hasImage = true;
-                            else if (libItem is MediaBrowser.Controller.Entities.Audio.Audio audioItem)
-                            {
-                                var parent = audioItem.ParentId != Guid.Empty ? _libraryManager.GetItemById(audioItem.ParentId) : null;
-                                if (!string.IsNullOrEmpty(parent?.GetImagePath(ImageType.Primary, 0))) hasImage = true;
-                            }
-                        }
-                    }
-                    catch { }
-                }
-                else if (!hasImage && entry?.AlbumId.HasValue == true && _cache.TryGet(entry.AlbumId.Value, out var parentEntry))
-                {
-                    if (!string.IsNullOrEmpty(parentEntry?.ImageUrl)) hasImage = true;
-                }
+                try { libItem = _libraryManager.GetItemById(dto.Id); } catch { }
+            }
 
-                if (hasImage)
+            string? physicalPath = null;
+            try { physicalPath = libItem?.GetImagePath(ImageType.Primary, 0); } catch { }
+            bool hasPhysicalImage = !string.IsNullOrEmpty(physicalPath) && System.IO.File.Exists(physicalPath);
+
+            // ==========================================
+            // 1. ALBUM (MusicAlbum)
+            // ==========================================
+            if (dto.Type == BaseItemKind.MusicAlbum)
+            {
+                if (!hasPhysicalImage)
                 {
-                    var tag = "resono-" + dto.Id.ToString("N");
+                    var albumArtTag = "resono-" + dto.Id.ToString("N");
                     dto.ImageTags ??= new Dictionary<ImageType, string>();
-                    dto.ImageTags[ImageType.Primary] = tag;
+                    dto.ImageTags[ImageType.Primary] = albumArtTag;
+
+                    dto.ImageBlurHashes ??= new Dictionary<ImageType, Dictionary<string, string>>();
+                    if (!dto.ImageBlurHashes.ContainsKey(ImageType.Primary))
+                    {
+                        dto.ImageBlurHashes[ImageType.Primary] = new Dictionary<string, string>();
+                    }
+                    dto.PrimaryImageAspectRatio = 1.0;
                 }
-            }
 
-            // 2. Ensure AlbumArtist / AlbumArtists / ArtistItems are never empty or Unknown
-            var artistName = !string.IsNullOrWhiteSpace(dto.AlbumArtist) && !string.Equals(dto.AlbumArtist, "Unknown", StringComparison.OrdinalIgnoreCase)
-                ? dto.AlbumArtist
-                : (entry?.ArtistName ?? dto.Artists?.FirstOrDefault(a => !string.IsNullOrWhiteSpace(a) && !string.Equals(a, "Unknown", StringComparison.OrdinalIgnoreCase)));
+                // Metadata consistency
+                var albumArtist = !string.IsNullOrWhiteSpace(dto.AlbumArtist) && !string.Equals(dto.AlbumArtist, "Unknown", StringComparison.OrdinalIgnoreCase)
+                    ? dto.AlbumArtist
+                    : (entry?.ArtistName ?? dto.Artists?.FirstOrDefault(a => !string.IsNullOrWhiteSpace(a) && !string.Equals(a, "Unknown", StringComparison.OrdinalIgnoreCase)));
 
-            if (!string.IsNullOrEmpty(artistName))
-            {
-                dto.AlbumArtist = artistName;
-                if (dto.Artists == null || !dto.Artists.Any())
+                if (!string.IsNullOrEmpty(albumArtist))
                 {
-                    dto.Artists = new[] { artistName };
+                    dto.AlbumArtist = albumArtist;
+                    if (dto.Artists == null || !dto.Artists.Any()) dto.Artists = new[] { albumArtist };
+                    if (dto.AlbumArtists == null || !dto.AlbumArtists.Any())
+                    {
+                        var artGuid = entry?.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", albumArtist);
+                        var pair = new[] { new NameGuidPair { Name = albumArtist, Id = artGuid } };
+                        dto.AlbumArtists = pair;
+                        dto.ArtistItems = pair;
+                    }
+                    else if (dto.ArtistItems == null || !dto.ArtistItems.Any())
+                    {
+                        dto.ArtistItems = dto.AlbumArtists;
+                    }
                 }
-                if (dto.AlbumArtists == null || !dto.AlbumArtists.Any())
+
+                if ((dto.Genres == null || !dto.Genres.Any()) && entry?.Genres != null && entry.Genres.Count > 0)
                 {
-                    var artGuid = entry?.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", artistName);
-                    var pair = new[] { new NameGuidPair { Name = artistName, Id = artGuid } };
-                    dto.AlbumArtists = pair;
-                    dto.ArtistItems = pair;
+                    dto.Genres = entry.Genres.ToArray();
+                    dto.GenreItems = entry.Genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray();
                 }
-                else if (dto.ArtistItems == null || !dto.ArtistItems.Any())
-                {
-                    dto.ArtistItems = dto.AlbumArtists;
-                }
+
+                if (!dto.ProductionYear.HasValue && entry?.ProductionYear.HasValue == true) dto.ProductionYear = entry.ProductionYear;
+                if (!dto.PremiereDate.HasValue && entry?.PremiereDate.HasValue == true) dto.PremiereDate = entry.PremiereDate;
             }
 
-            // 3. Ensure Genres and GenreItems
-            if ((dto.Genres == null || !dto.Genres.Any()) && entry?.Genres != null && entry.Genres.Count > 0)
+            // ==========================================
+            // 2. TRACK (Audio)
+            // ==========================================
+            else if (dto.Type == BaseItemKind.Audio || dto.MediaType == MediaType.Audio)
             {
-                dto.Genres = entry.Genres.ToArray();
-                dto.GenreItems = entry.Genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray();
+                Guid? albumId = dto.AlbumId ?? entry?.AlbumId;
+                if ((!albumId.HasValue || albumId.Value == Guid.Empty) && libItem is MediaBrowser.Controller.Entities.Audio.Audio audioItem && audioItem.ParentId != Guid.Empty)
+                {
+                    albumId = audioItem.ParentId;
+                }
+
+                if (albumId.HasValue && albumId.Value != Guid.Empty)
+                {
+                    dto.AlbumId = albumId.Value;
+                    if (!dto.ParentId.HasValue || dto.ParentId == Guid.Empty) dto.ParentId = albumId.Value;
+
+                    MediaBrowser.Controller.Entities.BaseItem? parentItem = null;
+                    if (_libraryManager != null)
+                    {
+                        try { parentItem = _libraryManager.GetItemById(albumId.Value); } catch { }
+                    }
+
+                    string? parentPhysicalPath = null;
+                    try { parentPhysicalPath = parentItem?.GetImagePath(ImageType.Primary, 0); } catch { }
+                    bool parentHasPhysicalCover = !string.IsNullOrEmpty(parentPhysicalPath) && System.IO.File.Exists(parentPhysicalPath);
+
+                    string albumArtTag;
+                    if (parentHasPhysicalCover)
+                    {
+                        albumArtTag = !string.IsNullOrEmpty(dto.AlbumPrimaryImageTag)
+                            ? dto.AlbumPrimaryImageTag
+                            : "local-" + albumId.Value.ToString("N");
+                    }
+                    else
+                    {
+                        albumArtTag = "resono-" + albumId.Value.ToString("N");
+                    }
+
+                    dto.AlbumPrimaryImageTag = albumArtTag;
+
+                    if (dto.ImageTags == null || !dto.ImageTags.ContainsKey(ImageType.Primary))
+                    {
+                        dto.ImageTags ??= new Dictionary<ImageType, string>();
+                        dto.ImageTags[ImageType.Primary] = albumArtTag;
+                    }
+
+                    dto.ImageBlurHashes ??= new Dictionary<ImageType, Dictionary<string, string>>();
+                    if (!dto.ImageBlurHashes.ContainsKey(ImageType.Primary))
+                    {
+                        dto.ImageBlurHashes[ImageType.Primary] = new Dictionary<string, string>();
+                    }
+                    dto.PrimaryImageAspectRatio = 1.0;
+                }
+
+                var trackArtist = !string.IsNullOrWhiteSpace(dto.AlbumArtist) && !string.Equals(dto.AlbumArtist, "Unknown", StringComparison.OrdinalIgnoreCase)
+                    ? dto.AlbumArtist
+                    : (entry?.ArtistName ?? dto.Artists?.FirstOrDefault(a => !string.IsNullOrWhiteSpace(a) && !string.Equals(a, "Unknown", StringComparison.OrdinalIgnoreCase)));
+
+                if (!string.IsNullOrEmpty(trackArtist))
+                {
+                    dto.AlbumArtist = trackArtist;
+                    if (dto.Artists == null || !dto.Artists.Any()) dto.Artists = new[] { trackArtist };
+                    if (dto.AlbumArtists == null || !dto.AlbumArtists.Any())
+                    {
+                        var artGuid = entry?.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", trackArtist);
+                        var pair = new[] { new NameGuidPair { Name = trackArtist, Id = artGuid } };
+                        dto.AlbumArtists = pair;
+                        dto.ArtistItems = pair;
+                    }
+                    else if (dto.ArtistItems == null || !dto.ArtistItems.Any())
+                    {
+                        dto.ArtistItems = dto.AlbumArtists;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(dto.Album) && !string.IsNullOrEmpty(entry?.AlbumName))
+                {
+                    dto.Album = entry.AlbumName;
+                }
+
+                if ((dto.Genres == null || !dto.Genres.Any()) && entry?.Genres != null && entry.Genres.Count > 0)
+                {
+                    dto.Genres = entry.Genres.ToArray();
+                    dto.GenreItems = entry.Genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray();
+                }
+
+                if (!dto.ProductionYear.HasValue && entry?.ProductionYear.HasValue == true) dto.ProductionYear = entry.ProductionYear;
+                if (!dto.PremiereDate.HasValue && entry?.PremiereDate.HasValue == true) dto.PremiereDate = entry.PremiereDate;
             }
 
-            // 4. Ensure ProductionYear and PremiereDate
-            if (!dto.ProductionYear.HasValue && entry?.ProductionYear.HasValue == true)
+            // ==========================================
+            // 3. ARTIST (MusicArtist)
+            // ==========================================
+            else if (dto.Type == BaseItemKind.MusicArtist)
             {
-                dto.ProductionYear = entry.ProductionYear;
-            }
-            if (!dto.PremiereDate.HasValue && entry?.PremiereDate.HasValue == true)
-            {
-                dto.PremiereDate = entry.PremiereDate;
+                if (!hasPhysicalImage)
+                {
+                    var artTag = "resono-" + dto.Id.ToString("N");
+                    dto.ImageTags ??= new Dictionary<ImageType, string>();
+                    if (!dto.ImageTags.ContainsKey(ImageType.Primary))
+                    {
+                        dto.ImageTags[ImageType.Primary] = artTag;
+                    }
+                    dto.ImageBlurHashes ??= new Dictionary<ImageType, Dictionary<string, string>>();
+                    if (!dto.ImageBlurHashes.ContainsKey(ImageType.Primary))
+                    {
+                        dto.ImageBlurHashes[ImageType.Primary] = new Dictionary<string, string>();
+                    }
+                    dto.PrimaryImageAspectRatio = 1.0;
+                }
             }
         }
 

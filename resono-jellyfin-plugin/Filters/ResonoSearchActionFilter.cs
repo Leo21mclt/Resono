@@ -1148,6 +1148,7 @@ namespace Resono.Plugin.Filters
                 MediaType = MediaType.Unknown,
                 Tags = new[] { "ResonoVirtual" },
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
+                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new Dictionary<string, string>() } },
                 PrimaryImageAspectRatio = 1.0,
                 IsFolder = true,
                 Artists = new[] { name },
@@ -1191,6 +1192,7 @@ namespace Resono.Plugin.Filters
                 MediaType = MediaType.Unknown,
                 Tags = new[] { "ResonoVirtual" },
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
+                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new Dictionary<string, string>() } },
                 PrimaryImageAspectRatio = 1.0,
                 Artists = !string.IsNullOrEmpty(e.ArtistName) ? new[] { e.ArtistName } : null,
                 AlbumArtist = e.ArtistName,
@@ -1228,25 +1230,28 @@ namespace Resono.Plugin.Filters
                 SupportsTranscoding = true,
                 SupportsDirectStream = true,
                 SupportsDirectPlay = true,
+                IsInfiniteStream = false,
                 RequiresOpening = false,
                 RequiresClosing = false,
+                RequiresLooping = false,
+                SupportsProbing = true,
                 RunTimeTicks = e.DurationMs.HasValue ? (long)e.DurationMs.Value * 10000 : null,
                 Bitrate = 320000,
                 DefaultAudioStreamIndex = 0,
-                MediaStreams = new List<MediaBrowser.Model.Entities.MediaStream>
+                MediaStreams = new List<MediaStream>
                 {
-                    new MediaBrowser.Model.Entities.MediaStream
+                    new MediaStream
                     {
-                        Codec = "mp3",
                         Type = MediaStreamType.Audio,
                         Index = 0,
                         IsDefault = true,
+                        Codec = "mp3",
                         BitRate = 320000,
-                        SampleRate = 44100,
                         Channels = 2,
+                        SampleRate = 44100,
                         ChannelLayout = "stereo"
                     },
-                    new MediaBrowser.Model.Entities.MediaStream
+                    new MediaStream
                     {
                         Codec = "lrc",
                         Type = MediaStreamType.Lyric,
@@ -1264,8 +1269,7 @@ namespace Resono.Plugin.Filters
 
         public static BaseItemDto BuildTrackDto(Guid id, ResonoItemCache.Entry e)
         {
-            var imageTag = "resono-" + id.ToString("N");
-            var albumImageTag = e.AlbumId.HasValue ? "resono-" + e.AlbumId.Value.ToString("N") : imageTag;
+            var albumImageTag = e.AlbumId.HasValue ? "resono-" + e.AlbumId.Value.ToString("N") : ("resono-" + id.ToString("N"));
 
             NameGuidPair[]? artistPair = null;
             if (!string.IsNullOrEmpty(e.ArtistName))
@@ -1289,7 +1293,8 @@ namespace Resono.Plugin.Filters
                 HasLyrics = true,
                 Tags = new[] { "ResonoVirtual" },
                 AlbumPrimaryImageTag = albumImageTag,
-                ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
+                ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, albumImageTag } },
+                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new Dictionary<string, string>() } },
                 PrimaryImageAspectRatio = 1.0,
                 AlbumId = e.AlbumId,
                 ParentId = e.AlbumId,

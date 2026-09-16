@@ -236,6 +236,12 @@ namespace Resono.Plugin.Filters
                                 ctx.HttpContext.Response.Headers["Cache-Control"] = "public, max-age=604800, immutable";
                                 return new PhysicalFileResult(parentPath, "image/jpeg");
                             }
+
+                            if (_cache.TryGet(parent.Id, out var parentEntry) && !string.IsNullOrEmpty(parentEntry?.ImageUrl))
+                            {
+                                _logger.LogInformation("[Resono] Serving virtual parent album image for track {Id} from album {AlbId}", itemId, parent.Id);
+                                return await FetchImageBytesOrRedirectAsync(parentEntry.ImageUrl, ctx.HttpContext).ConfigureAwait(false);
+                            }
                         }
 
                         var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(audioItem.Name)}&limit=3";
