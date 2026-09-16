@@ -575,12 +575,16 @@ class DeezerProvider(CatalogProvider):
             albums: list[CatalogAlbum] = []
             for it in items:
                 cover = it.get("cover_xl") or it.get("cover_big")
+                r_date = it.get("release_date")
+                prod_year = int(r_date[:4]) if r_date and len(r_date) >= 4 and r_date[:4].isdigit() else None
+                art_name = it.get("artist", {}).get("name") or name or ""
                 albums.append(CatalogAlbum(
                     id=f"deezer:album:{it.get('id')}",
                     title=it.get("title", "Unknown Album"),
-                    artist_name=it.get("artist", {}).get("name", ""),
+                    artist_name=art_name,
                     artist_id=f"deezer:artist:{resolved_id}",
-                    release_date=it.get("release_date"),
+                    release_date=r_date,
+                    production_year=prod_year,
                     total_tracks=it.get("nb_tracks", 1),
                     artwork_url=cover
                 ))
@@ -784,13 +788,16 @@ class DeezerProvider(CatalogProvider):
                 artist_name = artist_data.get("name", "Unknown Artist")
                 artist_id = str(artist_data.get("id", ""))
                 cover = it.get("cover_xl") or it.get("cover_big") or it.get("cover_medium")
+                r_date = it.get("release_date")
+                prod_year = int(r_date[:4]) if r_date and len(r_date) >= 4 and r_date[:4].isdigit() else None
                 if aid and title:
                     albums.append(CatalogAlbum(
                         id=f"deezer:album:{aid}",
                         title=title,
                         artist_name=artist_name,
                         artist_id=f"deezer:artist:{artist_id}" if artist_id else "",
-                        release_date=it.get("release_date"),
+                        release_date=r_date,
+                        production_year=prod_year,
                         total_tracks=it.get("nb_tracks", 1),
                         artwork_url=cover
                     ))

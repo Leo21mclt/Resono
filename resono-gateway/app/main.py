@@ -395,6 +395,8 @@ async def jellyfin_artist_albums(artist_id: str, name: str | None = Query(None),
                 "name": al.title,
                 "artistName": al.artist_name,
                 "releaseDate": al.release_date,
+                "productionYear": al.production_year,
+                "genres": al.genres,
                 "imageUrl": al.artwork_url,
                 "totalTracks": al.total_tracks
             }
@@ -541,6 +543,8 @@ async def jellyfin_get_chart_albums(country: str = Query("0"), limit: int = Quer
                 "artistId": a.artist_id,
                 "imageUrl": a.artwork_url,
                 "releaseDate": a.release_date,
+                "productionYear": a.production_year,
+                "genres": a.genres,
                 "totalTracks": a.total_tracks
             }
             for a in albums
@@ -567,6 +571,8 @@ async def jellyfin_get_recommendations(
                 "artistId": a.artist_id,
                 "imageUrl": a.artwork_url,
                 "releaseDate": a.release_date,
+                "productionYear": a.production_year,
+                "genres": a.genres,
                 "totalTracks": a.total_tracks
             }
             for a in albums

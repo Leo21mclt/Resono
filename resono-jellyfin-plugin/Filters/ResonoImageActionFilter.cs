@@ -226,6 +226,18 @@ namespace Resono.Plugin.Filters
                     }
                     else if (libItem is MediaBrowser.Controller.Entities.Audio.Audio audioItem && !string.IsNullOrEmpty(audioItem.Name))
                     {
+                        var parent = audioItem.Parent ?? (audioItem.ParentId.IsEmpty() ? null : _libraryManager.GetItemById(audioItem.ParentId));
+                        if (parent != null)
+                        {
+                            var parentPath = parent.GetImagePath(MediaBrowser.Model.Entities.ImageType.Primary);
+                            if (!string.IsNullOrEmpty(parentPath) && System.IO.File.Exists(parentPath))
+                            {
+                                _logger.LogInformation("[Resono] Serving local parent album cover ({Path}) for track {Id}", parentPath, itemId);
+                                ctx.HttpContext.Response.Headers["Cache-Control"] = "public, max-age=604800, immutable";
+                                return new PhysicalFileResult(parentPath, "image/jpeg");
+                            }
+                        }
+
                         var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(audioItem.Name)}&limit=3";
                         var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, fetchToken).ConfigureAwait(false);
                         var match = searchRes?.Tracks?.FirstOrDefault(t => string.Equals(t.Name, audioItem.Name, StringComparison.OrdinalIgnoreCase)) ?? searchRes?.Tracks?.FirstOrDefault();
@@ -351,9 +363,30 @@ namespace Resono.Plugin.Filters
             if (_imageCache.TryGetValue(imageUrl, out var cached))
             {
                 httpContext.Response.Headers["Cache-Control"] = "public, max-age=604800, immutable";
-                _logger.LogInformation("[Resono] Delivered cached direct image bytes ({Bytes} bytes) for {Url}", cached.Bytes.Length, imageUrl);
                 return new FileContentResult(cached.Bytes, cached.ContentType);
             }
+
+            // 2. Persistent disk cache
+            string? localDiskPath = null;
+            try
+            {
+                var dir = Plugin.Instance?.DataFolderPath;
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    var coversDir = System.IO.Path.Combine(dir, "covers");
+                    System.IO.Directory.CreateDirectory(coversDir);
+                    var hash = System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(imageUrl));
+                    var filename = Convert.ToHexString(hash) + ".jpg";
+                    localDiskPath = System.IO.Path.Combine(coversDir, filename);
+
+                    if (System.IO.File.Exists(localDiskPath) && new System.IO.FileInfo(localDiskPath).Length > 0)
+                    {
+                        httpContext.Response.Headers["Cache-Control"] = "public, max-age=604800, immutable";
+                        return new PhysicalFileResult(localDiskPath, "image/jpeg");
+                    }
+                }
+            }
+            catch { }
 
             try
             {
@@ -372,6 +405,11 @@ namespace Resono.Plugin.Filters
                             _imageCache.Clear();
                         }
                         _imageCache[imageUrl] = (DateTime.UtcNow, bytes, contentType);
+
+                        if (!string.IsNullOrEmpty(localDiskPath))
+                        {
+                            try { System.IO.File.WriteAllBytes(localDiskPath, bytes); } catch { }
+                        }
 
                         httpContext.Response.Headers["Cache-Control"] = "public, max-age=604800, immutable";
                         _logger.LogInformation("[Resono] Downloaded and delivered direct image bytes ({Bytes} bytes) for {Url}", bytes.Length, imageUrl);

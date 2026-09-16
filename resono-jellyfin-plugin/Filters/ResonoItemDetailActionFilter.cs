@@ -664,7 +664,112 @@ namespace Resono.Plugin.Filters
                 }
             }
 
+            // Universal Enrichment: Ensure any BaseItemDto returned by Jellyfin has complete metadata and ImageTags
+            if (ctx.Result is ObjectResult objRes)
+            {
+                if (objRes.Value is BaseItemDto singleDto)
+                {
+                    EnrichBaseItemDto(singleDto);
+                }
+                else if (objRes.Value is BaseItemDto[] dtos)
+                {
+                    foreach (var d in dtos) EnrichBaseItemDto(d);
+                }
+                else if (objRes.Value is QueryResult<BaseItemDto> qr && qr.Items != null)
+                {
+                    foreach (var d in qr.Items) EnrichBaseItemDto(d);
+                }
+                else if (objRes.Value is IEnumerable<BaseItemDto> enumDtos)
+                {
+                    foreach (var d in enumDtos) EnrichBaseItemDto(d);
+                }
+            }
+
             await next().ConfigureAwait(false);
+        }
+
+        private void EnrichBaseItemDto(BaseItemDto dto)
+        {
+            if (dto == null) return;
+
+            _cache.TryGet(dto.Id, out var entry);
+
+            // 1. Ensure ImageTags has Primary if there is any image available
+            if (dto.ImageTags == null || !dto.ImageTags.ContainsKey(ImageType.Primary))
+            {
+                bool hasImage = !string.IsNullOrEmpty(entry?.ImageUrl);
+                if (!hasImage && _libraryManager != null)
+                {
+                    try
+                    {
+                        var libItem = _libraryManager.GetItemById(dto.Id);
+                        if (libItem != null)
+                        {
+                            var pPath = libItem.GetImagePath(ImageType.Primary);
+                            if (!string.IsNullOrEmpty(pPath)) hasImage = true;
+                            else if (libItem is MediaBrowser.Controller.Entities.Audio.Audio audioItem)
+                            {
+                                var parent = audioItem.Parent ?? (audioItem.ParentId.IsEmpty() ? null : _libraryManager.GetItemById(audioItem.ParentId));
+                                if (!string.IsNullOrEmpty(parent?.GetImagePath(ImageType.Primary))) hasImage = true;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+                else if (!hasImage && entry?.AlbumId.HasValue == true && _cache.TryGet(entry.AlbumId.Value, out var parentEntry))
+                {
+                    if (!string.IsNullOrEmpty(parentEntry?.ImageUrl)) hasImage = true;
+                }
+
+                if (hasImage)
+                {
+                    var tag = "resono-" + dto.Id.ToString("N");
+                    dto.ImageTags ??= new Dictionary<ImageType, string>();
+                    dto.ImageTags[ImageType.Primary] = tag;
+                }
+            }
+
+            // 2. Ensure AlbumArtist / AlbumArtists / ArtistItems are never empty or Unknown
+            var artistName = !string.IsNullOrWhiteSpace(dto.AlbumArtist) && !string.Equals(dto.AlbumArtist, "Unknown", StringComparison.OrdinalIgnoreCase)
+                ? dto.AlbumArtist
+                : (entry?.ArtistName ?? dto.Artists?.FirstOrDefault(a => !string.IsNullOrWhiteSpace(a) && !string.Equals(a, "Unknown", StringComparison.OrdinalIgnoreCase)));
+
+            if (!string.IsNullOrEmpty(artistName))
+            {
+                dto.AlbumArtist = artistName;
+                if (dto.Artists == null || dto.Artists.Length == 0)
+                {
+                    dto.Artists = new[] { artistName };
+                }
+                if (dto.AlbumArtists == null || dto.AlbumArtists.Length == 0)
+                {
+                    var artGuid = entry?.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", artistName);
+                    var pair = new[] { new NameGuidPair { Name = artistName, Id = artGuid } };
+                    dto.AlbumArtists = pair;
+                    dto.ArtistItems = pair;
+                }
+                else if (dto.ArtistItems == null || dto.ArtistItems.Length == 0)
+                {
+                    dto.ArtistItems = dto.AlbumArtists;
+                }
+            }
+
+            // 3. Ensure Genres and GenreItems
+            if ((dto.Genres == null || dto.Genres.Length == 0) && entry?.Genres != null && entry.Genres.Count > 0)
+            {
+                dto.Genres = entry.Genres.ToArray();
+                dto.GenreItems = entry.Genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray();
+            }
+
+            // 4. Ensure ProductionYear and PremiereDate
+            if (!dto.ProductionYear.HasValue && entry?.ProductionYear.HasValue == true)
+            {
+                dto.ProductionYear = entry.ProductionYear;
+            }
+            if (!dto.PremiereDate.HasValue && entry?.PremiereDate.HasValue == true)
+            {
+                dto.PremiereDate = entry.PremiereDate;
+            }
         }
 
         private static bool IsAudioStreamRoute(ActionExecutingContext ctx, out Guid id)
@@ -953,17 +1058,29 @@ namespace Resono.Plugin.Filters
                     foreach (var al in res.Albums)
                     {
                         var id = ResonoItemCache.StubGuid("dz-album", al.Id ?? al.Name ?? Guid.NewGuid().ToString());
+                        var albArtist = !string.IsNullOrWhiteSpace(al.ArtistName) ? al.ArtistName : (artistEntry.Name ?? "");
+                        int? albYear = al.ProductionYear;
+                        DateTime? albDate = null;
+                        if (!string.IsNullOrEmpty(al.ReleaseDate) && DateTime.TryParse(al.ReleaseDate, out var parsedDate))
+                        {
+                            albDate = parsedDate;
+                            albYear ??= parsedDate.Year;
+                        }
+
                         var entry = new ResonoItemCache.Entry
                         {
                             Kind = "album",
                             Name = al.Name,
-                            ArtistName = al.ArtistName ?? artistEntry.Name,
+                            ArtistName = albArtist,
                             SpotifyId = al.Id,
                             ImageUrl = al.ImageUrl,
-                            ArtistId = artistEntry.Id
+                            ArtistId = artistEntry.Id,
+                            ProductionYear = albYear,
+                            PremiereDate = albDate,
+                            Genres = al.Genres
                         };
                         _cache.Set(id, entry);
-                        _registrar.RegisterAlbum(id, al.Name ?? "", al.ArtistName ?? artistEntry.Name);
+                        _registrar.RegisterAlbum(id, al.Name ?? "", albArtist, entry);
                         list.Add(ResonoSearchActionFilter.BuildAlbumDto(id, entry));
                     }
                 }
@@ -976,17 +1093,29 @@ namespace Resono.Plugin.Filters
                         foreach (var al in searchData.Albums)
                         {
                             var id = ResonoItemCache.StubGuid("dz-album", al.Id ?? al.Name ?? Guid.NewGuid().ToString());
+                            var albArtist = !string.IsNullOrWhiteSpace(al.ArtistName) ? al.ArtistName : (artistEntry.Name ?? "");
+                            int? albYear = al.ProductionYear;
+                            DateTime? albDate = null;
+                            if (!string.IsNullOrEmpty(al.ReleaseDate) && DateTime.TryParse(al.ReleaseDate, out var parsedDate))
+                            {
+                                albDate = parsedDate;
+                                albYear ??= parsedDate.Year;
+                            }
+
                             var entry = new ResonoItemCache.Entry
                             {
                                 Kind = "album",
                                 Name = al.Name,
-                                ArtistName = al.ArtistName ?? artistEntry.Name,
+                                ArtistName = albArtist,
                                 SpotifyId = al.Id,
                                 ImageUrl = al.ImageUrl,
-                                ArtistId = artistEntry.Id
+                                ArtistId = artistEntry.Id,
+                                ProductionYear = albYear,
+                                PremiereDate = albDate,
+                                Genres = al.Genres
                             };
                             _cache.Set(id, entry);
-                            _registrar.RegisterAlbum(id, al.Name ?? "", al.ArtistName ?? artistEntry.Name);
+                            _registrar.RegisterAlbum(id, al.Name ?? "", albArtist, entry);
                             list.Add(ResonoSearchActionFilter.BuildAlbumDto(id, entry));
                         }
                     }
@@ -1355,6 +1484,14 @@ namespace Resono.Plugin.Filters
                     {
                         var albId = ResonoItemCache.StubGuid("dz-album", a.Id ?? a.Name ?? Guid.NewGuid().ToString());
                         var artId = !string.IsNullOrEmpty(a.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", a.ArtistName) : (Guid?)null;
+                        int? albYear = a.ProductionYear;
+                        DateTime? albDate = null;
+                        if (!string.IsNullOrEmpty(a.ReleaseDate) && DateTime.TryParse(a.ReleaseDate, out var parsedDate))
+                        {
+                            albDate = parsedDate;
+                            albYear ??= parsedDate.Year;
+                        }
+
                         var entry = new ResonoItemCache.Entry
                         {
                             Kind = "album",
@@ -1363,10 +1500,13 @@ namespace Resono.Plugin.Filters
                             ArtistName = a.ArtistName,
                             ArtistId = artId,
                             ImageUrl = a.ImageUrl,
-                            SpotifyId = a.Id
+                            SpotifyId = a.Id,
+                            ProductionYear = albYear,
+                            PremiereDate = albDate,
+                            Genres = a.Genres
                         };
                         _cache.Set(albId, entry);
-                        _registrar.RegisterAlbum(albId, a.Name, a.ArtistName);
+                        _registrar.RegisterAlbum(albId, a.Name, a.ArtistName, entry);
                         list.Add(ResonoSearchActionFilter.BuildAlbumDto(albId, entry));
                     }
                     if (list.Count > 0)

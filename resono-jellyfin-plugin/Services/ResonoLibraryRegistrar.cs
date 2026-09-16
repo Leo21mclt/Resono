@@ -48,6 +48,9 @@ namespace Resono.Plugin.Services
                     IndexNumber = entry.TrackNumber,
                     ParentIndexNumber = entry.DiscNumber,
                     RunTimeTicks = entry.DurationMs.HasValue ? (long)entry.DurationMs.Value * 10000 : null,
+                    ProductionYear = entry.ProductionYear,
+                    PremiereDate = entry.PremiereDate,
+                    Genres = entry.Genres != null && entry.Genres.Count > 0 ? entry.Genres.ToArray() : Array.Empty<string>(),
                     DateCreated = DateTime.UtcNow,
                     IsVirtualItem = false,
                     ParentId = entry.AlbumId ?? Guid.Empty,
@@ -68,7 +71,7 @@ namespace Resono.Plugin.Services
             }
         }
 
-        public bool RegisterAlbum(Guid id, string? albumName, string? artistName)
+        public bool RegisterAlbum(Guid id, string? albumName, string? artistName, ResonoItemCache.Entry? entry = null)
         {
             if (string.IsNullOrWhiteSpace(albumName)) return false;
             if (_registered.ContainsKey(id)) return false;
@@ -84,6 +87,13 @@ namespace Resono.Plugin.Services
                     DateCreated = DateTime.UtcNow,
                     IsVirtualItem = false
                 };
+
+                if (entry != null)
+                {
+                    if (entry.ProductionYear.HasValue) album.ProductionYear = entry.ProductionYear;
+                    if (entry.PremiereDate.HasValue) album.PremiereDate = entry.PremiereDate;
+                    if (entry.Genres != null && entry.Genres.Count > 0) album.Genres = entry.Genres.ToArray();
+                }
 
                 _lib.RegisterItem(album);
                 _registered[id] = albumName;

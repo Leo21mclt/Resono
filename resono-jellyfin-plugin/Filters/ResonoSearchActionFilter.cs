@@ -316,6 +316,14 @@ namespace Resono.Plugin.Filters
                             }
                         }
 
+                        int? albYear = al.ProductionYear;
+                        DateTime? albDate = null;
+                        if (!string.IsNullOrEmpty(al.ReleaseDate) && DateTime.TryParse(al.ReleaseDate, out var parsedDate))
+                        {
+                            albDate = parsedDate;
+                            albYear ??= parsedDate.Year;
+                        }
+
                         var entry = new ResonoItemCache.Entry
                         {
                             Kind = "album",
@@ -323,9 +331,16 @@ namespace Resono.Plugin.Filters
                             ArtistName = al.ArtistName,
                             SpotifyId = al.Id,
                             ImageUrl = al.ImageUrl,
-                            ArtistId = artistId
+                            ArtistId = artistId,
+                            ProductionYear = albYear,
+                            PremiereDate = albDate,
+                            Genres = al.Genres
                         };
                         _cache.Set(id, entry);
+                        if (!string.IsNullOrEmpty(al.Name))
+                        {
+                            _registrar.RegisterAlbum(id, al.Name, al.ArtistName, entry);
+                        }
 
                         if (gatewayIds.Add(id))
                         {
@@ -523,7 +538,7 @@ namespace Resono.Plugin.Filters
                         _cache.Set(id, entry);
                         if (!string.IsNullOrEmpty(al.Name))
                         {
-                            _registrar.RegisterAlbum(id, al.Name, al.ArtistName);
+                            _registrar.RegisterAlbum(id, al.Name, al.ArtistName, entry);
                         }
 
                         if (gatewayIds.Add(id))
@@ -976,18 +991,28 @@ namespace Resono.Plugin.Filters
                     {
                         var albId = ResonoItemCache.StubGuid("dz-album", a.Id ?? a.Name ?? Guid.NewGuid().ToString());
                         var artId = !string.IsNullOrEmpty(a.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", a.ArtistName) : (Guid?)null;
+                        int? albYear = a.ProductionYear;
+                        DateTime? albDate = null;
+                        if (!string.IsNullOrEmpty(a.ReleaseDate) && DateTime.TryParse(a.ReleaseDate, out var parsedDate))
+                        {
+                            albDate = parsedDate;
+                            albYear ??= parsedDate.Year;
+                        }
+
                         var entry = new ResonoItemCache.Entry
                         {
                             Kind = "album",
-                            Id = albId,
                             Name = a.Name,
                             ArtistName = a.ArtistName,
                             ArtistId = artId,
                             ImageUrl = a.ImageUrl,
-                            SpotifyId = a.Id
+                            SpotifyId = a.Id,
+                            ProductionYear = albYear,
+                            PremiereDate = albDate,
+                            Genres = a.Genres
                         };
                         _cache.Set(albId, entry);
-                        _registrar.RegisterAlbum(albId, a.Name, a.ArtistName);
+                        _registrar.RegisterAlbum(albId, a.Name, a.ArtistName, entry);
                         list.Add(BuildAlbumDto(albId, entry));
                     }
                     if (list.Count > 0)
