@@ -1418,6 +1418,19 @@ namespace Resono.Plugin.Filters
                 var albumData = await client.GetFromJsonAsync<GatewayAlbumResponse>(url, fetchToken).ConfigureAwait(false);
                 if (albumData?.Tracks == null) return null;
 
+                if (!string.IsNullOrEmpty(albumData.Name)) albumEntry.Name = albumData.Name;
+                if (!string.IsNullOrEmpty(albumData.ArtistName)) albumEntry.ArtistName = albumData.ArtistName;
+                if (!string.IsNullOrEmpty(albumData.ImageUrl)) albumEntry.ImageUrl = albumData.ImageUrl;
+                if (albumData.ProductionYear.HasValue) albumEntry.ProductionYear = albumData.ProductionYear;
+                if (albumData.Genres != null && albumData.Genres.Count > 0) albumEntry.Genres = albumData.Genres;
+                if (!string.IsNullOrEmpty(albumData.ReleaseDate) && DateTimeOffset.TryParse(albumData.ReleaseDate, out var albDto))
+                {
+                    albumEntry.PremiereDate = albDto;
+                    if (!albumEntry.ProductionYear.HasValue) albumEntry.ProductionYear = albDto.Year;
+                }
+                _cache.Set(albumEntry.Id, albumEntry);
+                _registrar.RegisterAlbum(albumEntry.Id, albumEntry.Name, albumEntry.ArtistName);
+
                 var result = new List<BaseItemDto>();
                 foreach (var t in albumData.Tracks)
                 {
@@ -1442,7 +1455,10 @@ namespace Resono.Plugin.Filters
                         DiscNumber = t.DiscNumber,
                         StreamUrl = streamUrl,
                         AlbumId = albumEntry.Id,
-                        ArtistId = albumEntry.ArtistId
+                        ArtistId = albumEntry.ArtistId,
+                        ProductionYear = albumEntry.ProductionYear,
+                        PremiereDate = albumEntry.PremiereDate,
+                        Genres = albumEntry.Genres
                     };
                     _cache.Set(trackId, entry);
                     _registrar.RegisterTrack(trackId, entry);
@@ -1512,6 +1528,14 @@ namespace Resono.Plugin.Filters
                     if (alb != null && !string.IsNullOrEmpty(alb.Name))
                     {
                         var artId = !string.IsNullOrEmpty(alb.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", alb.ArtistName) : (Guid?)null;
+                        int? prodYear = alb.ProductionYear;
+                        DateTimeOffset? premDate = null;
+                        if (!string.IsNullOrEmpty(alb.ReleaseDate) && DateTimeOffset.TryParse(alb.ReleaseDate, out var albDto))
+                        {
+                            premDate = albDto;
+                            prodYear ??= albDto.Year;
+                        }
+
                         var entry = new ResonoItemCache.Entry
                         {
                             Kind = "album",
@@ -1519,7 +1543,10 @@ namespace Resono.Plugin.Filters
                             ArtistName = alb.ArtistName,
                             SpotifyId = alb.Id,
                             ImageUrl = alb.ImageUrl,
-                            ArtistId = artId
+                            ArtistId = artId,
+                            ProductionYear = prodYear,
+                            PremiereDate = premDate,
+                            Genres = alb.Genres
                         };
                         _cache.Set(id, entry);
                         _registrar.RegisterAlbum(id, alb.Name, alb.ArtistName);
@@ -1527,6 +1554,52 @@ namespace Resono.Plugin.Filters
                     }
                 }
                 catch { }
+
+                // 2.1 Fallback: resolve album by name via LibraryManager if registered
+                if (_libraryManager != null)
+                {
+                    try
+                    {
+                        var libItem = _libraryManager.GetItemById(id);
+                        if (libItem is MediaBrowser.Controller.Entities.Audio.MusicAlbum albItem && !string.IsNullOrEmpty(albItem.Name))
+                        {
+                            var searchUrl = $"{gatewayUrl}/jellyfin/search?q={Uri.EscapeDataString(albItem.Name)}&limit=3";
+                            var searchRes = await client.GetFromJsonAsync<GatewaySearchResponse>(searchUrl, fetchToken).ConfigureAwait(false);
+                            var match = searchRes?.Albums?.FirstOrDefault(a => string.Equals(a.Name, albItem.Name, StringComparison.OrdinalIgnoreCase)) ?? searchRes?.Albums?.FirstOrDefault();
+                            if (match != null && !string.IsNullOrEmpty(match.Id))
+                            {
+                                var fullAlb = await client.GetFromJsonAsync<GatewayAlbumResponse>($"{gatewayUrl}/jellyfin/album/{Uri.EscapeDataString(match.Id)}", fetchToken).ConfigureAwait(false);
+                                if (fullAlb != null && !string.IsNullOrEmpty(fullAlb.Name))
+                                {
+                                    var artId = !string.IsNullOrEmpty(fullAlb.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", fullAlb.ArtistName) : (Guid?)null;
+                                    int? pYear = fullAlb.ProductionYear;
+                                    DateTimeOffset? pDate = null;
+                                    if (!string.IsNullOrEmpty(fullAlb.ReleaseDate) && DateTimeOffset.TryParse(fullAlb.ReleaseDate, out var dtoVal))
+                                    {
+                                        pDate = dtoVal;
+                                        pYear ??= dtoVal.Year;
+                                    }
+                                    var entry = new ResonoItemCache.Entry
+                                    {
+                                        Kind = "album",
+                                        Name = fullAlb.Name,
+                                        ArtistName = fullAlb.ArtistName,
+                                        SpotifyId = fullAlb.Id,
+                                        ImageUrl = fullAlb.ImageUrl,
+                                        ArtistId = artId,
+                                        ProductionYear = pYear,
+                                        PremiereDate = pDate,
+                                        Genres = fullAlb.Genres
+                                    };
+                                    _cache.Set(id, entry);
+                                    _registrar.RegisterAlbum(id, fullAlb.Name, fullAlb.ArtistName);
+                                    return entry;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
 
                 // 3. Try resolving as artist
                 try
@@ -1685,6 +1758,12 @@ namespace Resono.Plugin.Filters
         public string? ArtistId { get; set; }
         [JsonPropertyName("imageUrl")]
         public string? ImageUrl { get; set; }
+        [JsonPropertyName("releaseDate")]
+        public string? ReleaseDate { get; set; }
+        [JsonPropertyName("productionYear")]
+        public int? ProductionYear { get; set; }
+        [JsonPropertyName("genres")]
+        public List<string>? Genres { get; set; }
         [JsonPropertyName("tracks")]
         public List<GatewayTrack>? Tracks { get; set; }
     }

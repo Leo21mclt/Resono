@@ -500,6 +500,14 @@ namespace Resono.Plugin.Filters
                             ? ResonoItemCache.StubGuid("dz-artist", al.ArtistId)
                             : (!string.IsNullOrEmpty(al.ArtistName) ? ResonoItemCache.StubGuid("dz-artist", al.ArtistName) : (Guid?)null);
 
+                        int? albYear = al.ProductionYear;
+                        DateTimeOffset? albDate = null;
+                        if (!string.IsNullOrEmpty(al.ReleaseDate) && DateTimeOffset.TryParse(al.ReleaseDate, out var parsedDate))
+                        {
+                            albDate = parsedDate;
+                            albYear ??= parsedDate.Year;
+                        }
+
                         var entry = new ResonoItemCache.Entry
                         {
                             Kind = "album",
@@ -507,7 +515,10 @@ namespace Resono.Plugin.Filters
                             ArtistName = al.ArtistName,
                             SpotifyId = al.Id,
                             ImageUrl = al.ImageUrl,
-                            ArtistId = artistId
+                            ArtistId = artistId,
+                            ProductionYear = albYear,
+                            PremiereDate = albDate,
+                            Genres = al.Genres
                         };
                         _cache.Set(id, entry);
                         if (!string.IsNullOrEmpty(al.Name))
@@ -1080,8 +1091,8 @@ namespace Resono.Plugin.Filters
                 Type = BaseItemKind.Playlist,
                 MediaType = MediaType.Audio,
                 Tags = new[] { "ResonoVirtual", "Discovery" },
+                PrimaryImageTag = imageTag,
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
-                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new() } },
                 PrimaryImageAspectRatio = 1.0,
                 ChildCount = 50,
                 IsFolder = true,
@@ -1112,8 +1123,8 @@ namespace Resono.Plugin.Filters
                 Type = BaseItemKind.MusicArtist,
                 MediaType = MediaType.Unknown,
                 Tags = new[] { "ResonoVirtual" },
+                PrimaryImageTag = imageTag,
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
-                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new() } },
                 PrimaryImageAspectRatio = 1.0,
                 IsFolder = true,
                 Artists = new[] { name },
@@ -1144,6 +1155,10 @@ namespace Resono.Plugin.Filters
                 artistPair = new[] { new NameGuidPair { Name = e.ArtistName, Id = e.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", e.ArtistName) } };
             }
 
+            var genrePairs = e.Genres != null && e.Genres.Count > 0
+                ? e.Genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray()
+                : Array.Empty<NameGuidPair>();
+
             return new BaseItemDto
             {
                 Id = id,
@@ -1152,13 +1167,17 @@ namespace Resono.Plugin.Filters
                 Type = BaseItemKind.MusicAlbum,
                 MediaType = MediaType.Unknown,
                 Tags = new[] { "ResonoVirtual" },
+                PrimaryImageTag = imageTag,
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
-                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new() } },
                 PrimaryImageAspectRatio = 1.0,
                 Artists = !string.IsNullOrEmpty(e.ArtistName) ? new[] { e.ArtistName } : null,
                 AlbumArtist = e.ArtistName,
                 AlbumArtists = artistPair ?? Array.Empty<NameGuidPair>(),
                 ArtistItems = artistPair ?? Array.Empty<NameGuidPair>(),
+                ProductionYear = e.ProductionYear,
+                PremiereDate = e.PremiereDate,
+                Genres = e.Genres?.ToArray(),
+                GenreItems = genrePairs,
                 IsFolder = true,
                 LocationType = LocationType.Virtual,
                 UserData = new UserItemDataDto
@@ -1232,6 +1251,10 @@ namespace Resono.Plugin.Filters
                 artistPair = new[] { new NameGuidPair { Name = e.ArtistName, Id = e.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", e.ArtistName) } };
             }
 
+            var genrePairs = e.Genres != null && e.Genres.Count > 0
+                ? e.Genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray()
+                : Array.Empty<NameGuidPair>();
+
             var mediaSource = BuildMediaSource(id, e);
 
             return new BaseItemDto
@@ -1243,9 +1266,9 @@ namespace Resono.Plugin.Filters
                 MediaType = MediaType.Audio,
                 HasLyrics = true,
                 Tags = new[] { "ResonoVirtual" },
+                PrimaryImageTag = imageTag,
                 AlbumPrimaryImageTag = albumImageTag,
                 ImageTags = new Dictionary<ImageType, string> { { ImageType.Primary, imageTag } },
-                ImageBlurHashes = new Dictionary<ImageType, Dictionary<string, string>> { { ImageType.Primary, new() } },
                 PrimaryImageAspectRatio = 1.0,
                 AlbumId = e.AlbumId,
                 ParentId = e.AlbumId,
@@ -1257,6 +1280,10 @@ namespace Resono.Plugin.Filters
                 IndexNumber = e.TrackNumber,
                 ParentIndexNumber = e.DiscNumber,
                 RunTimeTicks = e.DurationMs.HasValue ? (long)e.DurationMs.Value * 10000 : null,
+                ProductionYear = e.ProductionYear,
+                PremiereDate = e.PremiereDate,
+                Genres = e.Genres?.ToArray(),
+                GenreItems = genrePairs,
                 IsFolder = false,
                 CanDownload = false,
                 LocationType = LocationType.FileSystem,
@@ -1321,6 +1348,15 @@ namespace Resono.Plugin.Filters
 
         [JsonPropertyName("imageUrl")]
         public string? ImageUrl { get; set; }
+
+        [JsonPropertyName("releaseDate")]
+        public string? ReleaseDate { get; set; }
+
+        [JsonPropertyName("productionYear")]
+        public int? ProductionYear { get; set; }
+
+        [JsonPropertyName("genres")]
+        public List<string>? Genres { get; set; }
 
         [JsonPropertyName("providerIds")]
         public Dictionary<string, string>? ProviderIds { get; set; }

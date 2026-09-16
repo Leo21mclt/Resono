@@ -16,6 +16,7 @@ class CatalogAlbum(BaseModel):
     release_type: str = "album" # album, single, compilation
     total_tracks: int = 1
     artwork_url: str | None = None
+    genres: list[str] = Field(default_factory=list)
 
 class CatalogTrack(BaseModel):
     id: str

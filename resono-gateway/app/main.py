@@ -326,12 +326,18 @@ async def jellyfin_album_details(album_id: str):
     if not data:
         raise HTTPException(status_code=404, detail="Album not found")
     album, tracks = data
+    prod_year = None
+    if album.release_date and len(album.release_date) >= 4 and album.release_date[:4].isdigit():
+        prod_year = int(album.release_date[:4])
+
     return {
         "id": album.id,
         "name": album.title,
         "artistName": album.artist_name,
         "artistId": album.artist_id,
         "releaseDate": album.release_date,
+        "productionYear": prod_year,
+        "genres": album.genres or [],
         "imageUrl": album.artwork_url,
         "providerIds": extract_provider_ids(album.id),
         "tracks": [

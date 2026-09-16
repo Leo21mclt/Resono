@@ -627,6 +627,18 @@ class DeezerProvider(CatalogProvider):
             artist_name = artist_data.get("name", "Unknown Artist")
             artist_id = str(artist_data.get("id", ""))
 
+            genres = [g.get("name") for g in data.get("genres", {}).get("data", []) if g.get("name")]
+            if not genres and data.get("genre_id"):
+                gid = data.get("genre_id")
+                genre_map = {
+                    132: "Pop", 116: "Rap/Hip Hop", 152: "Rock", 113: "Dance", 165: "R&B",
+                    85: "Alternative", 98: "Classical", 464: "Metal", 129: "Jazz", 173: "Latin",
+                    106: "Electro", 84: "Country", 2: "African", 16: "Asian Pop", 144: "Reggae",
+                    12: "Latin", 52: "World", 71: "Indie", 153: "Blues", 169: "Soul"
+                }
+                if gid in genre_map:
+                    genres = [genre_map[gid]]
+
             total_tracks = data.get("nb_tracks", 1)
             album = CatalogAlbum(
                 id=f"deezer:album:{raw_id}",
@@ -635,7 +647,8 @@ class DeezerProvider(CatalogProvider):
                 artist_id=f"deezer:artist:{artist_id}",
                 release_date=data.get("release_date"),
                 total_tracks=total_tracks,
-                artwork_url=cover
+                artwork_url=cover,
+                genres=genres
             )
 
             tracks_data = data.get("tracks", {}).get("data", [])
