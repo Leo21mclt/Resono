@@ -41,6 +41,38 @@ class CatalogManager:
         }
         self._cache: dict[str, tuple[float, CatalogSearchResult]] = {}
         self._cache_ttl_sec = 600  # 10 minutes
+        self._tracks_by_id: dict[str, CatalogTrack] = {}
+
+    def register_track(self, track: CatalogTrack, canonical: CanonicalTrack | None = None) -> None:
+        """Index a track under all its possible IDs and GUID representations."""
+        if not track or not track.id:
+            return
+        if len(self._tracks_by_id) > 10000:
+            self._tracks_by_id.clear()
+
+        # Raw provider ID (e.g. "deezer:12345", "12345")
+        self._tracks_by_id[track.id] = track
+        if ":" in track.id:
+            self._tracks_by_id[track.id.split(":", 1)[1]] = track
+
+        # Canonical UUIDv5
+        cid = canonical.canonical_id if canonical else deterministic_guid(track.id)
+        self._tracks_by_id[cid] = track
+        self._tracks_by_id[cid.replace("-", "").lower()] = track
+
+        # ResonoItemCache MD5 StubGuid ("resono-v1|dz-track|{id}")
+        import hashlib, uuid
+        for kind in ("dz-track", "track"):
+            stub_bytes = f"resono-v1|{kind}|{track.id.strip()}".encode("utf-8")
+            stub_guid = str(uuid.UUID(bytes=hashlib.md5(stub_bytes).digest()))
+            self._tracks_by_id[stub_guid] = track
+            self._tracks_by_id[stub_guid.replace("-", "").lower()] = track
+            if ":" in track.id:
+                raw_id = track.id.split(":", 1)[1].strip()
+                stub_bytes2 = f"resono-v1|{kind}|{raw_id}".encode("utf-8")
+                stub_guid2 = str(uuid.UUID(bytes=hashlib.md5(stub_bytes2).digest()))
+                self._tracks_by_id[stub_guid2] = track
+                self._tracks_by_id[stub_guid2.replace("-", "").lower()] = track
 
     def get_provider(self, name: str | None) -> CatalogProvider:
         clean = (name or "").lower().strip()
@@ -212,19 +244,42 @@ class CatalogManager:
         return None
 
     async def get_track(self, track_id: str) -> CatalogTrack | None:
+        clean_key = track_id.strip()
+        if clean_key in self._tracks_by_id:
+            return self._tracks_by_id[clean_key]
+        clean_lower = clean_key.lower()
+        if clean_lower in self._tracks_by_id:
+            return self._tracks_by_id[clean_lower]
+        clean_no_hyphen = clean_lower.replace("-", "")
+        if clean_no_hyphen in self._tracks_by_id:
+            return self._tracks_by_id[clean_no_hyphen]
+
         prefix = track_id.split(":")[0].lower() if ":" in track_id else ""
         if prefix in ("itunes", "apple"):
-            return await self.providers["apple"].get_track(track_id)
+            res = await self.providers["apple"].get_track(track_id)
+            if res:
+                self.register_track(res)
+            return res
         if prefix == "deezer":
-            return await self.providers["deezer"].get_track(track_id)
+            res = await self.providers["deezer"].get_track(track_id)
+            if res:
+                self.register_track(res)
+            return res
         if prefix == "spotify":
-            return await self.providers["spotify"].get_track(track_id)
+            res = await self.providers["spotify"].get_track(track_id)
+            if res:
+                self.register_track(res)
+            return res
         if prefix in ("mb", "musicbrainz"):
-            return await self.providers["musicbrainz"].get_track(track_id)
+            res = await self.providers["musicbrainz"].get_track(track_id)
+            if res:
+                self.register_track(res)
+            return res
 
         for prov in (self.providers["apple"], self.providers["deezer"], self.providers["spotify"]):
             res = await prov.get_track(track_id)
             if res:
+                self.register_track(res)
                 return res
 
         # Try SQLite database lookup for canonical UUID or ID
@@ -234,14 +289,16 @@ class CatalogManager:
             from sqlalchemy import select
             from sqlalchemy.orm import selectinload
             async with AsyncSessionLocal() as session:
-                stmt = select(Track).options(selectinload(Track.artist), selectinload(Track.album)).where((Track.id == track_id) | (Track.spotify_id == track_id))
+                stmt = select(Track).options(selectinload(Track.artist), selectinload(Track.album)).where(
+                    (Track.id == track_id) | (Track.spotify_id == track_id) | (Track.id == clean_no_hyphen)
+                )
                 db_res = await session.execute(stmt)
                 t = db_res.scalar_one_or_none()
                 if t:
                     artist_name = t.artist.name if t.artist else ""
                     album_title = t.album.title if t.album else ""
                     artwork_url = t.album.artwork_url if t.album else ""
-                    return CatalogTrack(
+                    ct = CatalogTrack(
                         id=t.id,
                         title=t.title,
                         artist_name=artist_name,
@@ -249,6 +306,8 @@ class CatalogManager:
                         duration_ms=t.duration_ms,
                         artwork_url=artwork_url
                     )
+                    self.register_track(ct)
+                    return ct
         except Exception:
             pass
 
@@ -403,7 +462,7 @@ class CatalogManager:
     def to_canonical_track(self, track: CatalogTrack) -> CanonicalTrack:
         """Convert a CatalogTrack into the backend-neutral CanonicalTrack with deterministic GUID."""
         guid = deterministic_guid(track.id)
-        return CanonicalTrack(
+        canonical = CanonicalTrack(
             canonical_id=guid,
             spotify_id=track.id,
             artist_id=track.artist_id,
@@ -418,6 +477,8 @@ class CatalogManager:
             artwork_url=track.artwork_url,
             explicit=track.explicit
         )
+        self.register_track(track, canonical)
+        return canonical
 
     async def sync_track_to_db(self, track: CatalogTrack, session: AsyncSession) -> Track:
         """

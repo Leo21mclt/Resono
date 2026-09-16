@@ -81,11 +81,12 @@ namespace Resono.Plugin.Filters
                 }
             }
 
-            // 0.1 Synced Karaoke Lyrics (/Audio/{id}/Lyrics or /Items/{id}/Lyrics)
+            // 0.1 Synced Karaoke Lyrics (/Audio/{id}/Lyrics or /Items/{id}/Lyrics or /Users/{userId}/Items/{id}/Lyrics)
             if (path.IndexOf("/Lyrics", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                if (TryExtractGuidFromPath(path, out var lyricItemId))
+                if (TryExtractLyricItemId(ctx, out var lyricItemId))
                 {
+                    _logger.LogInformation("[Resono-Lyrics] Intercepted lyrics request for ItemId={ItemId}, Path={Path}", lyricItemId, path);
                     if (!_cache.TryGet(lyricItemId, out var lyricEntry) || lyricEntry is not { Kind: "track" })
                     {
                         var cfg = Plugin.Instance?.Configuration;
@@ -116,11 +117,42 @@ namespace Resono.Plugin.Filters
                                     ArtistId = artId
                                 };
                                 _cache.Set(lyricItemId, lyricEntry);
+                                _logger.LogInformation("[Resono-Lyrics] Recovered track from Gateway for ItemId={ItemId}: {Artist} - {Title}", lyricItemId, trackInfo.ArtistName, trackInfo.Name);
                             }
                         }
-                        catch
+                        catch (Exception ex)
                         {
-                            // ignore, handled below
+                            _logger.LogDebug(ex, "[Resono-Lyrics] Gateway track lookup failed for {ItemId}: {Message}", lyricItemId, ex.Message);
+                        }
+                    }
+
+                    // Fallback to LibraryManager if in-memory cache and gateway both missed
+                    if ((lyricEntry == null || string.IsNullOrEmpty(lyricEntry.Name)) && _libraryManager != null)
+                    {
+                        try
+                        {
+                            var baseItem = _libraryManager.GetItemById(lyricItemId);
+                            if (baseItem is MediaBrowser.Controller.Entities.Audio audioItem)
+                            {
+                                var artName = (audioItem.Artists != null && audioItem.Artists.Count > 0)
+                                    ? audioItem.Artists[0]
+                                    : (audioItem.AlbumArtist ?? string.Empty);
+                                var durMs = audioItem.RunTimeTicks.HasValue ? (int)(audioItem.RunTimeTicks.Value / 10000L) : (int?)null;
+                                lyricEntry = new ResonoItemCache.Entry
+                                {
+                                    Kind = "track",
+                                    Name = audioItem.Name ?? string.Empty,
+                                    ArtistName = artName,
+                                    AlbumName = audioItem.Album ?? string.Empty,
+                                    DurationMs = durMs
+                                };
+                                _cache.Set(lyricItemId, lyricEntry);
+                                _logger.LogInformation("[Resono-Lyrics] Recovered track from LibraryManager for ItemId={ItemId}: {Artist} - {Title}", lyricItemId, artName, audioItem.Name);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug(ex, "[Resono-Lyrics] LibraryManager lookup failed for {ItemId}: {Message}", lyricItemId, ex.Message);
                         }
                     }
 
@@ -129,12 +161,18 @@ namespace Resono.Plugin.Filters
                         var lyricDto = await FetchSyncedLyricsAsync(lyricEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                         if (lyricDto != null)
                         {
+                            _logger.LogInformation("[Resono-Lyrics] Returning {Count} lyric lines for {Artist} - {Title}", lyricDto.Lyrics.Count, lyricEntry.ArtistName, lyricEntry.Name);
                             ctx.Result = new OkObjectResult(lyricDto);
                             return;
                         }
 
+                        _logger.LogWarning("[Resono-Lyrics] No lyrics found on LrcLib for {Artist} - {Title}", lyricEntry.ArtistName, lyricEntry.Name);
                         ctx.Result = new NotFoundResult();
                         return;
+                    }
+                    else
+                    {
+                        _logger.LogWarning("[Resono-Lyrics] Could not resolve track metadata for ItemId={ItemId}, Path={Path}", lyricItemId, path);
                     }
                 }
             }
@@ -793,12 +831,43 @@ namespace Resono.Plugin.Filters
         {
             id = default;
             var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            foreach (var s in segments)
+            for (int i = segments.Length - 1; i >= 0; i--)
             {
+                var s = segments[i];
                 var clean = s.IndexOf('.') >= 0 ? s.Split('.')[0] : s;
                 if (Guid.TryParse(clean, out id)) return true;
             }
             return false;
+        }
+
+        private static bool TryExtractLyricItemId(ActionExecutingContext ctx, out Guid id)
+        {
+            id = default;
+            var path = ctx.HttpContext.Request.Path.Value ?? string.Empty;
+            var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < segments.Length; i++)
+            {
+                if (string.Equals(segments[i], "Lyrics", StringComparison.OrdinalIgnoreCase) && i > 0)
+                {
+                    var prev = segments[i - 1];
+                    var clean = prev.IndexOf('.') >= 0 ? prev.Split('.')[0] : prev;
+                    if (Guid.TryParse(clean, out id))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            var route = ctx.RouteData.Values;
+            foreach (var k in new[] { "itemId", "ItemId", "id", "Id" })
+            {
+                if (route.TryGetValue(k, out var rv) && rv != null && Guid.TryParse(rv.ToString(), out id))
+                {
+                    return true;
+                }
+            }
+
+            return TryExtractGuidFromPath(path, out id);
         }
 
         private static bool TryExtractSingleItemId(ActionExecutingContext ctx, out Guid id)
@@ -1504,9 +1573,14 @@ namespace Resono.Plugin.Filters
                     url += $"&album={Uri.EscapeDataString(trackEntry.AlbumName)}";
                 }
 
+                _logger.LogInformation("[Resono-Lyrics] Querying gateway for lyrics: {Url}", url);
                 var client = _httpClientFactory.CreateClient();
                 var data = await client.GetFromJsonAsync<LrcLibResponse>(url, ct).ConfigureAwait(false);
-                if (data == null) return null;
+                if (data == null)
+                {
+                    _logger.LogWarning("[Resono-Lyrics] Gateway returned null for lyrics query: {Url}", url);
+                    return null;
+                }
 
                 var lines = new List<LyricLine>();
                 if (!string.IsNullOrWhiteSpace(data.SyncedLyrics))
@@ -1538,7 +1612,11 @@ namespace Resono.Plugin.Filters
                     }
                 }
 
-                if (lines.Count == 0) return null;
+                if (lines.Count == 0)
+                {
+                    _logger.LogWarning("[Resono-Lyrics] No lines parsed from lyrics response for {Artist} - {Title}", trackEntry.ArtistName, trackEntry.Name);
+                    return null;
+                }
 
                 return new LyricDto
                 {
@@ -1554,7 +1632,7 @@ namespace Resono.Plugin.Filters
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Failed to fetch lyrics: {Message}", ex.Message);
+                _logger.LogWarning(ex, "[Resono-Lyrics] Failed to fetch lyrics: {Message}", ex.Message);
                 return null;
             }
         }
