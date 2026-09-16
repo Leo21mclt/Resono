@@ -705,12 +705,12 @@ namespace Resono.Plugin.Filters
                         var libItem = _libraryManager.GetItemById(dto.Id);
                         if (libItem != null)
                         {
-                            var pPath = libItem.GetImagePath(ImageType.Primary);
+                            var pPath = libItem.GetImagePath(ImageType.Primary, 0);
                             if (!string.IsNullOrEmpty(pPath)) hasImage = true;
                             else if (libItem is MediaBrowser.Controller.Entities.Audio.Audio audioItem)
                             {
-                                var parent = audioItem.Parent ?? (audioItem.ParentId.IsEmpty() ? null : _libraryManager.GetItemById(audioItem.ParentId));
-                                if (!string.IsNullOrEmpty(parent?.GetImagePath(ImageType.Primary))) hasImage = true;
+                                var parent = audioItem.ParentId != Guid.Empty ? _libraryManager.GetItemById(audioItem.ParentId) : null;
+                                if (!string.IsNullOrEmpty(parent?.GetImagePath(ImageType.Primary, 0))) hasImage = true;
                             }
                         }
                     }
@@ -737,25 +737,25 @@ namespace Resono.Plugin.Filters
             if (!string.IsNullOrEmpty(artistName))
             {
                 dto.AlbumArtist = artistName;
-                if (dto.Artists == null || dto.Artists.Length == 0)
+                if (dto.Artists == null || dto.Artists.Count == 0)
                 {
                     dto.Artists = new[] { artistName };
                 }
-                if (dto.AlbumArtists == null || dto.AlbumArtists.Length == 0)
+                if (dto.AlbumArtists == null || dto.AlbumArtists.Count == 0)
                 {
                     var artGuid = entry?.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", artistName);
                     var pair = new[] { new NameGuidPair { Name = artistName, Id = artGuid } };
                     dto.AlbumArtists = pair;
                     dto.ArtistItems = pair;
                 }
-                else if (dto.ArtistItems == null || dto.ArtistItems.Length == 0)
+                else if (dto.ArtistItems == null || dto.ArtistItems.Count == 0)
                 {
                     dto.ArtistItems = dto.AlbumArtists;
                 }
             }
 
             // 3. Ensure Genres and GenreItems
-            if ((dto.Genres == null || dto.Genres.Length == 0) && entry?.Genres != null && entry.Genres.Count > 0)
+            if ((dto.Genres == null || dto.Genres.Count == 0) && entry?.Genres != null && entry.Genres.Count > 0)
             {
                 dto.Genres = entry.Genres.ToArray();
                 dto.GenreItems = entry.Genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray();

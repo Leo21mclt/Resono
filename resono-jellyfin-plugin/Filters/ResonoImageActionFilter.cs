@@ -226,10 +226,10 @@ namespace Resono.Plugin.Filters
                     }
                     else if (libItem is MediaBrowser.Controller.Entities.Audio.Audio audioItem && !string.IsNullOrEmpty(audioItem.Name))
                     {
-                        var parent = audioItem.Parent ?? (audioItem.ParentId.IsEmpty() ? null : _libraryManager.GetItemById(audioItem.ParentId));
+                        var parent = audioItem.ParentId != Guid.Empty ? _libraryManager.GetItemById(audioItem.ParentId) : null;
                         if (parent != null)
                         {
-                            var parentPath = parent.GetImagePath(MediaBrowser.Model.Entities.ImageType.Primary);
+                            var parentPath = parent.GetImagePath(MediaBrowser.Model.Entities.ImageType.Primary, 0);
                             if (!string.IsNullOrEmpty(parentPath) && System.IO.File.Exists(parentPath))
                             {
                                 _logger.LogInformation("[Resono] Serving local parent album cover ({Path}) for track {Id}", parentPath, itemId);
