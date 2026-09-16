@@ -33,6 +33,9 @@ class DeezerProvider(CatalogProvider):
             return CatalogSearchResult()
 
         try:
+            # 1. Run smart artist search (filters spam/piano/tributes and enriches with related artists)
+            artist_task = self.search_artists(clean_q, limit=limit)
+
             async with self._get_client() as client:
                 async def fetch_endpoint(path: str, p: dict):
                     try:
@@ -43,33 +46,51 @@ class DeezerProvider(CatalogProvider):
                         logger.debug(f"Deezer search subquery {path} error: {e}")
                     return []
 
-                # Query tracks, albums, and artists concurrently in parallel
+                # Query tracks and albums concurrently alongside smart artist search
                 track_task = fetch_endpoint("/search", {"q": clean_q, "limit": limit})
                 album_task = fetch_endpoint("/search/album", {"q": clean_q, "limit": limit})
-                artist_task = fetch_endpoint("/search/artist", {"q": clean_q, "limit": limit})
 
-                track_items, album_items, artist_items = await asyncio.gather(
-                    track_task, album_task, artist_task
+                artists_list, track_items, album_items = await asyncio.gather(
+                    artist_task, track_task, album_task
                 )
 
             tracks: list[CatalogTrack] = []
             albums_map: dict[str, CatalogAlbum] = {}
             artists_map: dict[str, CatalogArtist] = {}
 
-            # 1. Process dedicated Artist search results first
-            for it in artist_items:
-                aid = str(it.get("id", ""))
-                aname = it.get("name", "")
-                if aid and aname and aid not in artists_map:
-                    pic = it.get("picture_xl") or it.get("picture_big") or it.get("picture_medium")
-                    artists_map[aid] = CatalogArtist(
-                        id=f"deezer:artist:{aid}",
-                        name=aname,
-                        artwork_url=pic
-                    )
+            # 1. Process smart Artist search results first (preserving curated order & related artists)
+            for art in artists_list:
+                aid = art.id.replace("deezer:artist:", "")
+                if aid and aid not in artists_map:
+                    artists_map[aid] = art
 
             # 2. Process dedicated Album search results (ensuring matching albums appear prominently)
+            album_spam_terms = {"tribute", "karaoke", "piano cover", "instrumental version", "relaxing", "sleep music"}
+            top_artist_name = artists_list[0].name.lower() if artists_list else ""
+            is_artist_query = (clean_q.lower() == top_artist_name) or (len(artists_list) > 0 and artists_list[0].name.lower() in clean_q.lower())
+
+            filtered_albums = []
             for it in album_items:
+                al_title = it.get("title", "")
+                if any(term in al_title.lower() for term in album_spam_terms):
+                    continue
+                filtered_albums.append(it)
+
+            if is_artist_query and top_artist_name:
+                artist_albums = [a for a in filtered_albums if a.get("artist", {}).get("name", "").lower() == top_artist_name]
+                other_albums = [a for a in filtered_albums if a.get("artist", {}).get("name", "").lower() != top_artist_name]
+
+                def album_rank(a):
+                    title = (a.get("title") or "").lower()
+                    penalty = 0
+                    if "track by track" in title or "karaoke" in title or "acoustic" in title or "karaoke" in title:
+                        penalty += 10
+                    return penalty
+
+                artist_albums.sort(key=album_rank)
+                filtered_albums = artist_albums + other_albums
+
+            for it in filtered_albums:
                 al_id = str(it.get("id", ""))
                 al_title = it.get("title", "")
                 if al_id and al_title and al_id not in albums_map:
@@ -139,29 +160,9 @@ class DeezerProvider(CatalogProvider):
                         explicit=bool(it.get("explicit_lyrics", False))
                     ))
 
-            # Smart ranking: Sort albums so exact / close matches appear at the very top (Deezer Web parity)
-            lower_q = clean_q.lower()
-            sorted_albums = sorted(
-                albums_map.values(),
-                key=lambda a: (
-                    0 if (a.title or "").lower() == lower_q else (
-                        1 if lower_q in (a.title or "").lower() else 2
-                    )
-                )
-            )
-
-            sorted_artists = sorted(
-                artists_map.values(),
-                key=lambda art: (
-                    0 if (art.name or "").lower() == lower_q else (
-                        1 if lower_q in (art.name or "").lower() else 2
-                    )
-                )
-            )
-
             return CatalogSearchResult(
-                artists=sorted_artists,
-                albums=sorted_albums,
+                artists=list(artists_map.values()),
+                albums=list(albums_map.values()),
                 tracks=tracks
             )
         except Exception as e:
