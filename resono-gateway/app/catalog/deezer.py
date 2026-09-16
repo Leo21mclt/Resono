@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio
 import httpx
 import logging
@@ -143,8 +144,8 @@ class DeezerProvider(CatalogProvider):
             sorted_albums = sorted(
                 albums_map.values(),
                 key=lambda a: (
-                    0 if a.title.lower() == lower_q else (
-                        1 if lower_q in a.title.lower() else 2
+                    0 if (a.title or "").lower() == lower_q else (
+                        1 if lower_q in (a.title or "").lower() else 2
                     )
                 )
             )
@@ -152,8 +153,8 @@ class DeezerProvider(CatalogProvider):
             sorted_artists = sorted(
                 artists_map.values(),
                 key=lambda art: (
-                    0 if art.name.lower() == lower_q else (
-                        1 if lower_q in art.name.lower() else 2
+                    0 if (art.name or "").lower() == lower_q else (
+                        1 if lower_q in (art.name or "").lower() else 2
                     )
                 )
             )
