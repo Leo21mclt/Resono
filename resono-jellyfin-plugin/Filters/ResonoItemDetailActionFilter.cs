@@ -411,7 +411,7 @@ namespace Resono.Plugin.Filters
                         if (parentEntry is { Kind: "artist" })
                         {
                             var types = ResonoSearchActionFilter.ExtractIncludeItemTypes(req.HttpContext);
-                            if (types.Contains("MusicAlbum"))
+                            if (types.Contains("MusicAlbum") || types.Contains("Album"))
                             {
                                 var albums = await FetchArtistAlbumsAsync(parentEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                                 ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
@@ -486,8 +486,8 @@ namespace Resono.Plugin.Filters
                         }
 
                         var types = ResonoSearchActionFilter.ExtractIncludeItemTypes(req.HttpContext);
-                        bool wantsAlbum = types.Contains("MusicAlbum");
-                        bool wantsAudio = types.Contains("Audio") || (!wantsAlbum && types.Count == 0);
+                        bool wantsAlbum = types.Contains("MusicAlbum") || types.Contains("Album");
+                        bool wantsAudio = types.Contains("Audio") || types.Contains("Song") || (!wantsAlbum && types.Count == 0);
 
                         if (wantsAlbum)
                         {
@@ -531,7 +531,7 @@ namespace Resono.Plugin.Filters
             if (path.IndexOf("/Items/Latest", StringComparison.OrdinalIgnoreCase) >= 0 && ctx.Result is ObjectResult latestOr)
             {
                 var types = ResonoSearchActionFilter.ExtractIncludeItemTypes(ctx.HttpContext);
-                bool wantsAlbums = types.Contains("MusicAlbum");
+                bool wantsAlbums = types.Contains("MusicAlbum") || types.Contains("Album");
 
                 Guid userId = Guid.Empty;
                 try

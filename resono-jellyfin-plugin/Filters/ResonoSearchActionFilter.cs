@@ -252,7 +252,7 @@ namespace Resono.Plugin.Filters
             var requestedTypes = ExtractIncludeItemTypes(httpCtx);
             bool hasTypeFilter = requestedTypes.Count > 0;
             bool wantArtists = !hasTypeFilter || requestedTypes.Contains("MusicArtist") || requestedTypes.Contains("Artist");
-            bool wantAlbums = !hasTypeFilter || requestedTypes.Contains("MusicAlbum");
+            bool wantAlbums = !hasTypeFilter || requestedTypes.Contains("MusicAlbum") || requestedTypes.Contains("Album");
             bool wantTracks = !hasTypeFilter || requestedTypes.Contains("Audio") || requestedTypes.Contains("Song");
 
             // CRITICAL FOR MANET:
@@ -576,6 +576,7 @@ namespace Resono.Plugin.Filters
                             MediaType = MediaType.Audio,
                             Artists = !string.IsNullOrEmpty(t.ArtistName) ? new[] { t.ArtistName } : Array.Empty<string>(),
                             Album = t.AlbumName,
+                            AlbumId = albumId,
                             AlbumArtist = t.ArtistName,
                             PrimaryImageTag = "resono-" + id.ToString("N"),
                             RunTimeTicks = t.DurationMs.HasValue ? (long)t.DurationMs.Value * 10000 : null,
@@ -634,8 +635,8 @@ namespace Resono.Plugin.Filters
             var additions = new List<BaseItemDto>();
 
             var types = ExtractIncludeItemTypes(ctx.HttpContext);
-            bool wantAlbum = types.Count == 0 || types.Contains("MusicAlbum");
-            bool wantAudio = types.Count == 0 || types.Contains("Audio");
+            bool wantAlbum = types.Count == 0 || types.Contains("MusicAlbum") || types.Contains("Album");
+            bool wantAudio = types.Count == 0 || types.Contains("Audio") || types.Contains("Song");
 
             foreach (var p in recent)
             {
@@ -787,7 +788,7 @@ namespace Resono.Plugin.Filters
             if (!string.IsNullOrWhiteSpace(term)) return false;
 
             var types = ExtractIncludeItemTypes(ctx.HttpContext);
-            if (types.Contains("MusicArtist") || types.Contains("MusicAlbum") || path.StartsWith("/Artists", StringComparison.OrdinalIgnoreCase))
+            if (types.Contains("MusicArtist") || types.Contains("Artist") || types.Contains("MusicAlbum") || types.Contains("Album") || path.StartsWith("/Artists", StringComparison.OrdinalIgnoreCase))
                 return true;
 
             return false;
@@ -799,8 +800,8 @@ namespace Resono.Plugin.Filters
 
             var path = ctx.HttpContext.Request.Path.Value ?? string.Empty;
             var types = ExtractIncludeItemTypes(ctx.HttpContext);
-            bool wantArtists = types.Contains("MusicArtist") || path.StartsWith("/Artists", StringComparison.OrdinalIgnoreCase);
-            bool wantAlbums = types.Contains("MusicAlbum");
+            bool wantArtists = types.Contains("MusicArtist") || types.Contains("Artist") || path.StartsWith("/Artists", StringComparison.OrdinalIgnoreCase);
+            bool wantAlbums = types.Contains("MusicAlbum") || types.Contains("Album");
 
             Guid userId = Guid.Empty;
             try

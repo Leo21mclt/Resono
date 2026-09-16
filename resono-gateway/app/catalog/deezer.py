@@ -76,19 +76,37 @@ class DeezerProvider(CatalogProvider):
                     continue
                 filtered_albums.append(it)
 
+            def album_rank(a):
+                title = (a.get("title") or "").lower()
+                rec_type = (a.get("record_type") or "").lower()
+                nb_tr = a.get("nb_tracks") or 1
+                
+                # Priority: full albums first (0), EPs second (4), 1-track singles last (10)
+                type_penalty = 0
+                if rec_type == "single" or nb_tr == 1:
+                    type_penalty = 10
+                elif rec_type == "ep":
+                    type_penalty = 4
+
+                spam_penalty = 0
+                if "track by track" in title or "karaoke" in title or "acoustic" in title:
+                    spam_penalty = 20
+
+                # Match bonus if query matches album title
+                match_bonus = 0
+                if clean_q.lower() in title or title in clean_q.lower():
+                    match_bonus = -15
+                
+                return type_penalty + spam_penalty + match_bonus
+
             if is_artist_query and top_artist_name:
                 artist_albums = [a for a in filtered_albums if a.get("artist", {}).get("name", "").lower() == top_artist_name]
                 other_albums = [a for a in filtered_albums if a.get("artist", {}).get("name", "").lower() != top_artist_name]
-
-                def album_rank(a):
-                    title = (a.get("title") or "").lower()
-                    penalty = 0
-                    if "track by track" in title or "karaoke" in title or "acoustic" in title or "karaoke" in title:
-                        penalty += 10
-                    return penalty
-
                 artist_albums.sort(key=album_rank)
+                other_albums.sort(key=album_rank)
                 filtered_albums = artist_albums + other_albums
+            else:
+                filtered_albums.sort(key=album_rank)
 
             for it in filtered_albums:
                 al_id = str(it.get("id", ""))
@@ -371,24 +389,41 @@ class DeezerProvider(CatalogProvider):
             artist_name = artist_data.get("name", "Unknown Artist")
             artist_id = str(artist_data.get("id", ""))
 
+            total_tracks = data.get("nb_tracks", 1)
             album = CatalogAlbum(
                 id=f"deezer:album:{raw_id}",
                 title=data.get("title", "Unknown Album"),
                 artist_name=artist_name,
                 artist_id=f"deezer:artist:{artist_id}",
                 release_date=data.get("release_date"),
-                total_tracks=data.get("nb_tracks", 1),
+                total_tracks=total_tracks,
                 artwork_url=cover
             )
 
             tracks_data = data.get("tracks", {}).get("data", [])
+            # Deezer caps embedded album tracks at 25. If total_tracks > len(tracks_data), fetch the complete tracklist.
+            if total_tracks > len(tracks_data):
+                try:
+                    async with self._get_client() as client:
+                        tr_res = await client.get(f"/album/{raw_id}/tracks", params={"limit": 100})
+                        if tr_res.status_code == 200:
+                            fetched_tracks = tr_res.json().get("data", [])
+                            if len(fetched_tracks) > len(tracks_data):
+                                tracks_data = fetched_tracks
+                except Exception as e:
+                    logger.debug(f"Could not fetch full tracklist for album {raw_id}: {e}")
+
             tracks: list[CatalogTrack] = []
             for idx, t in enumerate(tracks_data, 1):
+                track_artist = t.get("artist", {})
+                t_artist_name = track_artist.get("name") or artist_name
+                t_artist_id = f"deezer:artist:{track_artist.get('id')}" if track_artist.get("id") else f"deezer:artist:{artist_id}"
+
                 tracks.append(CatalogTrack(
                     id=f"deezer:track:{t.get('id')}",
                     title=t.get("title", ""),
-                    artist_name=artist_name,
-                    artist_id=f"deezer:artist:{artist_id}",
+                    artist_name=t_artist_name,
+                    artist_id=t_artist_id,
                     album_title=album.title,
                     album_id=album.id,
                     duration_ms=t.get("duration", 0) * 1000,
