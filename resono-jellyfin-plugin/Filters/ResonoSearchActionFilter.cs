@@ -1031,7 +1031,6 @@ namespace Resono.Plugin.Filters
                 IsFolder = true,
                 CanDelete = false,
                 CanDownload = false,
-                SupportsSync = false,
                 LocationType = LocationType.Virtual,
                 Artists = Array.Empty<string>(),
                 ArtistItems = Array.Empty<NameGuidPair>(),
@@ -1043,7 +1042,7 @@ namespace Resono.Plugin.Filters
                 LockedFields = Array.Empty<MetadataField>(),
                 UserData = new UserItemDataDto
                 {
-                    ItemId = id,
+                    ItemId = id.ToString("N"),
                     PlaybackPositionTicks = 0,
                     PlayCount = 0,
                     IsFavorite = false,
@@ -1084,11 +1083,10 @@ namespace Resono.Plugin.Filters
                 AlbumCount = 20,
                 CanDelete = false,
                 CanDownload = false,
-                SupportsSync = false,
                 LocationType = LocationType.Virtual,
                 UserData = new UserItemDataDto
                 {
-                    ItemId = id,
+                    ItemId = id.ToString("N"),
                     PlaybackPositionTicks = 0,
                     PlayCount = 0,
                     IsFavorite = false,
@@ -1130,11 +1128,10 @@ namespace Resono.Plugin.Filters
                 IsFolder = true,
                 CanDelete = false,
                 CanDownload = false,
-                SupportsSync = false,
                 LocationType = LocationType.Virtual,
                 UserData = new UserItemDataDto
                 {
-                    ItemId = id,
+                    ItemId = id.ToString("N"),
                     PlaybackPositionTicks = 0,
                     PlayCount = 0,
                     IsFavorite = false,
@@ -1225,14 +1222,13 @@ namespace Resono.Plugin.Filters
                 IsFolder = false,
                 CanDelete = false,
                 CanDownload = false,
-                SupportsSync = false,
                 LocationType = LocationType.FileSystem,
                 MediaSources = new[] { mediaSource },
                 MediaSourceCount = 1,
                 Container = "mp3",
                 UserData = new UserItemDataDto
                 {
-                    ItemId = id,
+                    ItemId = id.ToString("N"),
                     PlaybackPositionTicks = 0,
                     PlayCount = 0,
                     IsFavorite = false,
