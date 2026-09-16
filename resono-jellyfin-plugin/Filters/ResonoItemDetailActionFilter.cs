@@ -737,25 +737,25 @@ namespace Resono.Plugin.Filters
             if (!string.IsNullOrEmpty(artistName))
             {
                 dto.AlbumArtist = artistName;
-                if (dto.Artists == null || dto.Artists.Count == 0)
+                if (dto.Artists == null || !dto.Artists.Any())
                 {
                     dto.Artists = new[] { artistName };
                 }
-                if (dto.AlbumArtists == null || dto.AlbumArtists.Count == 0)
+                if (dto.AlbumArtists == null || !dto.AlbumArtists.Any())
                 {
                     var artGuid = entry?.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", artistName);
                     var pair = new[] { new NameGuidPair { Name = artistName, Id = artGuid } };
                     dto.AlbumArtists = pair;
                     dto.ArtistItems = pair;
                 }
-                else if (dto.ArtistItems == null || dto.ArtistItems.Count == 0)
+                else if (dto.ArtistItems == null || !dto.ArtistItems.Any())
                 {
                     dto.ArtistItems = dto.AlbumArtists;
                 }
             }
 
             // 3. Ensure Genres and GenreItems
-            if ((dto.Genres == null || dto.Genres.Count == 0) && entry?.Genres != null && entry.Genres.Count > 0)
+            if ((dto.Genres == null || !dto.Genres.Any()) && entry?.Genres != null && entry.Genres.Count > 0)
             {
                 dto.Genres = entry.Genres.ToArray();
                 dto.GenreItems = entry.Genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray();
