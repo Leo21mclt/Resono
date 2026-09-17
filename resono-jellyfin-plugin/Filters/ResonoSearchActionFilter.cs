@@ -8,6 +8,9 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
+using MediaBrowser.Controller.Dto;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
@@ -798,6 +801,10 @@ namespace Resono.Plugin.Filters
             if (path.IndexOf("/UserViews", StringComparison.OrdinalIgnoreCase) >= 0 || path.IndexOf("/Views", StringComparison.OrdinalIgnoreCase) >= 0)
                 return false;
 
+            // Do not treat /Playlists/{id}/Items as a playlist container query
+            if (path.IndexOf("/Playlists/", StringComparison.OrdinalIgnoreCase) >= 0 && path.TrimEnd('/').EndsWith("/Items", StringComparison.OrdinalIgnoreCase))
+                return false;
+
             var types = ExtractIncludeItemTypes(ctx.HttpContext);
             if (types.Contains("Playlist") || path.IndexOf("/Playlists", StringComparison.OrdinalIgnoreCase) >= 0)
                 return true;
@@ -835,10 +842,77 @@ namespace Resono.Plugin.Filters
         {
             if (ctx.Result is not ObjectResult or || or.Value is not QueryResult<BaseItemDto> qr) return;
 
+            var existingIds = qr.Items.Select(i => i.Id).ToHashSet();
+
+            // 1. Ensure any existing playlist returned has LocationType = FileSystem and MediaType = Audio
+            foreach (var item in qr.Items.Where(i => i.Type == BaseItemKind.Playlist))
+            {
+                item.LocationType = LocationType.FileSystem;
+                item.MediaType = MediaType.Audio;
+            }
+
+            // 2. If parentId was specified (e.g. Discrete scoped to Music library),
+            // user-created playlists were excluded by Jellyfin because playlists live in ManualPlaylistsFolder.
+            // Fetch the user's actual playlists from Jellyfin and include them!
+            try
+            {
+                var query = new InternalItemsQuery
+                {
+                    IncludeItemTypes = new[] { BaseItemKind.Playlist },
+                    Recursive = true
+                };
+
+                var result = _libraryManager.GetItemsResult(query);
+                if (result?.Items != null && result.Items.Count > 0)
+                {
+                    var userPlaylistDtos = new List<BaseItemDto>();
+                    foreach (var pl in result.Items)
+                    {
+                        if (existingIds.Add(pl.Id))
+                        {
+                            var dto = new BaseItemDto
+                            {
+                                Id = pl.Id,
+                                Name = pl.Name,
+                                ServerId = Plugin.ServerSystemId,
+                                Type = BaseItemKind.Playlist,
+                                MediaType = MediaType.Audio,
+                                LocationType = LocationType.FileSystem,
+                                IsFolder = true,
+                                CanDelete = true,
+                                CanDownload = false,
+                                RunTimeTicks = pl.RunTimeTicks,
+                                DateCreated = pl.DateCreated,
+                                UserData = new UserItemDataDto
+                                {
+                                    PlaybackPositionTicks = 0,
+                                    PlayCount = 0,
+                                    IsFavorite = false,
+                                    Played = false,
+                                    Key = pl.Id.ToString("N")
+                                }
+                            };
+
+                            userPlaylistDtos.Add(dto);
+                        }
+                    }
+
+                    if (userPlaylistDtos.Count > 0)
+                    {
+                        qr.Items = qr.Items.Concat(userPlaylistDtos).ToArray();
+                        qr.TotalRecordCount = qr.Items.Count;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to augment user playlists: {Message}", ex.Message);
+            }
+
+            // 3. Augment with virtual discovery chart playlists if enabled
             var charts = await FetchChartsAsync(ct).ConfigureAwait(false);
             if (charts.Count > 0)
             {
-                var existingIds = qr.Items.Select(i => i.Id).ToHashSet();
                 var toAdd = charts.Where(c => existingIds.Add(c.Id)).ToArray();
                 if (toAdd.Length > 0)
                 {
