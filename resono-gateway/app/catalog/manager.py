@@ -381,8 +381,10 @@ class CatalogManager:
                         related = await deezer.get_artist_related(artist_str, limit=5)
                         for rel in related[:3]:
                             if hasattr(deezer, "get_artist_albums"):
-                                albs = await deezer.get_artist_albums(rel.id, limit=3)
+                                albs = await deezer.get_artist_albums(rel.id, name=rel.name, limit=3)
                                 for a in albs:
+                                    if not a.artist_name and rel.name:
+                                        a.artist_name = rel.name
                                     norm = a.title.lower().strip()
                                     if norm not in seen_album_titles:
                                         seen_album_titles.add(norm)

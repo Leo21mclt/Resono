@@ -582,12 +582,20 @@ class DeezerProvider(CatalogProvider):
                 res.raise_for_status()
                 data = res.json()
             items = data.get("data", [])
+            if not name and items:
+                try:
+                    ar_res = await client.get(f"/artist/{resolved_id}")
+                    if ar_res.status_code == 200:
+                        name = ar_res.json().get("name")
+                except Exception:
+                    pass
+
             albums: list[CatalogAlbum] = []
             for it in items:
                 cover = it.get("cover_xl") or it.get("cover_big")
                 r_date = it.get("release_date")
                 prod_year = int(r_date[:4]) if r_date and len(r_date) >= 4 and r_date[:4].isdigit() else None
-                art_name = it.get("artist", {}).get("name") or name or ""
+                art_name = it.get("artist", {}).get("name") or name or "Various Artists"
                 albums.append(CatalogAlbum(
                     id=f"deezer:album:{it.get('id')}",
                     title=it.get("title", "Unknown Album"),

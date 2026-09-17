@@ -264,11 +264,11 @@ async def jellyfin_search(
             {
                 "id": al.id,
                 "name": al.title,
-                "artistName": al.artist_name,
-                "artistId": al.artist_id,
+                "artistName": al.artist_name or "Various Artists",
+                "artistId": al.artist_id or "",
                 "releaseDate": al.release_date,
-                "productionYear": al.production_year or (int(al.release_date[:4]) if al.release_date and len(al.release_date) >= 4 and al.release_date[:4].isdigit() else None),
-                "genres": al.genres,
+                "productionYear": al.production_year or (int(al.release_date[:4]) if al.release_date and len(al.release_date) >= 4 and al.release_date[:4].isdigit() else 2024),
+                "genres": al.genres or ["Album"],
                 "imageUrl": al.artwork_url,
                 "providerIds": extract_provider_ids(al.id)
             }
@@ -541,12 +541,12 @@ async def jellyfin_get_chart_albums(country: str = Query("0"), limit: int = Quer
             {
                 "id": a.id,
                 "name": a.title,
-                "artistName": a.artist_name,
-                "artistId": a.artist_id,
+                "artistName": a.artist_name or "Various Artists",
+                "artistId": a.artist_id or "",
                 "imageUrl": a.artwork_url,
                 "releaseDate": a.release_date,
-                "productionYear": a.production_year,
-                "genres": a.genres,
+                "productionYear": a.production_year or (int(a.release_date[:4]) if a.release_date and len(a.release_date) >= 4 and a.release_date[:4].isdigit() else 2024),
+                "genres": a.genres or ["Album"],
                 "totalTracks": a.total_tracks
             }
             for a in albums
@@ -569,12 +569,12 @@ async def jellyfin_get_recommendations(
             {
                 "id": a.id,
                 "name": a.title,
-                "artistName": a.artist_name,
-                "artistId": a.artist_id,
+                "artistName": a.artist_name or "Various Artists",
+                "artistId": a.artist_id or "",
                 "imageUrl": a.artwork_url,
                 "releaseDate": a.release_date,
-                "productionYear": a.production_year,
-                "genres": a.genres,
+                "productionYear": a.production_year or (int(a.release_date[:4]) if a.release_date and len(a.release_date) >= 4 and a.release_date[:4].isdigit() else 2024),
+                "genres": a.genres or ["Album"],
                 "totalTracks": a.total_tracks
             }
             for a in albums

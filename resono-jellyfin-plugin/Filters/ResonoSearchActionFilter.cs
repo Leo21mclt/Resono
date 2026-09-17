@@ -57,6 +57,7 @@ namespace Resono.Plugin.Filters
         private readonly ResonoItemCache _cache;
         private readonly ResonoLibraryRegistrar _registrar;
         private readonly ResonoRecentlyPlayedTracker _recentlyPlayed;
+        private readonly ResonoFavoritesTracker _favoritesTracker;
         private readonly IAuthorizationContext _authContext;
         private readonly MediaBrowser.Controller.Library.ILibraryManager _libraryManager;
         private readonly ILogger<ResonoSearchActionFilter> _logger;
@@ -66,6 +67,7 @@ namespace Resono.Plugin.Filters
             ResonoItemCache cache,
             ResonoLibraryRegistrar registrar,
             ResonoRecentlyPlayedTracker recentlyPlayed,
+            ResonoFavoritesTracker favoritesTracker,
             IAuthorizationContext authContext,
             MediaBrowser.Controller.Library.ILibraryManager libraryManager,
             ILogger<ResonoSearchActionFilter> logger)
@@ -74,6 +76,7 @@ namespace Resono.Plugin.Filters
             _cache = cache;
             _registrar = registrar;
             _recentlyPlayed = recentlyPlayed;
+            _favoritesTracker = favoritesTracker;
             _authContext = authContext;
             _libraryManager = libraryManager;
             _logger = logger;
@@ -92,6 +95,10 @@ namespace Resono.Plugin.Filters
                 else if (ShouldAugmentRecentlyPlayed(ctx))
                 {
                     TryAugmentRecentlyPlayed(ctx);
+                }
+                else if (ShouldAugmentFavorites(ctx))
+                {
+                    TryAugmentFavorites(ctx);
                 }
                 else if (ShouldAugmentPlaylists(ctx))
                 {
@@ -267,6 +274,14 @@ namespace Resono.Plugin.Filters
                 wantTracks = false;
             }
 
+            Guid searchUserId = Guid.Empty;
+            try
+            {
+                var auth = _authContext.GetAuthorizationInfo(httpCtx.Request).GetAwaiter().GetResult();
+                if (auth?.UserId != null && auth.UserId != Guid.Empty) searchUserId = auth.UserId;
+            }
+            catch { }
+
             var gatewayItems = new List<BaseItemDto>();
             var gatewayIds = new HashSet<Guid>();
 
@@ -288,7 +303,7 @@ namespace Resono.Plugin.Filters
 
                         if (gatewayIds.Add(id))
                         {
-                            gatewayItems.Add(BuildArtistDto(id, entry));
+                            gatewayItems.Add(BuildArtistDto(id, entry, _favoritesTracker.IsFavorite(searchUserId, id)));
                         }
                     }
                 }
@@ -347,7 +362,7 @@ namespace Resono.Plugin.Filters
 
                         if (gatewayIds.Add(id))
                         {
-                            gatewayItems.Add(BuildAlbumDto(id, entry));
+                            gatewayItems.Add(BuildAlbumDto(id, entry, _favoritesTracker.IsFavorite(searchUserId, id)));
                         }
                     }
                 }
@@ -430,7 +445,7 @@ namespace Resono.Plugin.Filters
 
                         if (gatewayIds.Add(id))
                         {
-                            gatewayItems.Add(BuildTrackDto(id, entry));
+                            gatewayItems.Add(BuildTrackDto(id, entry, _favoritesTracker.IsFavorite(searchUserId, id)));
                         }
                     }
                 }
@@ -499,8 +514,9 @@ namespace Resono.Plugin.Filters
                                 Name = a.Name,
                                 Type = BaseItemKind.MusicArtist,
                                 MediaType = MediaType.Unknown,
-                                Artists = Array.Empty<string>(),
-                                AlbumArtist = null,
+                                Artists = !string.IsNullOrEmpty(a.Name) ? new[] { a.Name } : Array.Empty<string>(),
+                                AlbumArtist = a.Name,
+                                MatchedTerm = a.Name,
                                 IsFolder = true,
                                 PrimaryImageAspectRatio = 1.0,
                                 PrimaryImageTag = id.ToString("N")
@@ -548,6 +564,9 @@ namespace Resono.Plugin.Filters
                             _registrar.RegisterAlbum(id, al.Name, al.ArtistName, entry);
                         }
 
+                        var albArtist = !string.IsNullOrWhiteSpace(al.ArtistName) ? al.ArtistName : "Various Artists";
+                        var effectiveYear = albYear ?? (albDate.HasValue ? albDate.Value.Year : 2024);
+
                         if (gatewayIds.Add(id))
                         {
                             gatewayHints.Add(new SearchHint
@@ -558,9 +577,10 @@ namespace Resono.Plugin.Filters
                                 Type = BaseItemKind.MusicAlbum,
                                 MediaType = MediaType.Unknown,
                                 Album = al.Name,
-                                AlbumArtist = al.ArtistName,
-                                Artists = !string.IsNullOrEmpty(al.ArtistName) ? new[] { al.ArtistName } : Array.Empty<string>(),
-                                ProductionYear = albYear,
+                                AlbumArtist = albArtist,
+                                Artists = new[] { albArtist },
+                                ProductionYear = effectiveYear,
+                                MatchedTerm = al.Name,
                                 IsFolder = true,
                                 PrimaryImageAspectRatio = 1.0,
                                 PrimaryImageTag = id.ToString("N")
@@ -751,6 +771,85 @@ namespace Resono.Plugin.Filters
                         additions.Add(BuildTrackDto(p.TrackId, trEntry));
                     }
                 }
+            }
+
+            if (additions.Count > 0)
+            {
+                qr.Items = additions.Concat(qr.Items).ToArray();
+                qr.TotalRecordCount = qr.Items.Count;
+            }
+        }
+
+        private bool ShouldAugmentFavorites(ResultExecutingContext ctx)
+        {
+            var cfg = Plugin.Instance?.Configuration;
+            if (cfg is null) return false;
+            if (ctx.Result is not ObjectResult { Value: QueryResult<BaseItemDto> }) return false;
+
+            var q = ctx.HttpContext.Request.Query;
+            var filters = (q.TryGetValue("filters", out var f1) ? f1.ToString()
+                : q.TryGetValue("Filters", out var f2) ? f2.ToString() : string.Empty);
+            var isFav = (q.TryGetValue("isFavorite", out var if1) ? if1.ToString()
+                : q.TryGetValue("IsFavorite", out var if2) ? if2.ToString() : string.Empty);
+
+            return filters.IndexOf("IsFavorite", StringComparison.OrdinalIgnoreCase) >= 0
+                || string.Equals(isFav, "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void TryAugmentFavorites(ResultExecutingContext ctx)
+        {
+            if (ctx.Result is not ObjectResult or || or.Value is not QueryResult<BaseItemDto> qr) return;
+
+            Guid userId = Guid.Empty;
+            try
+            {
+                var auth = _authContext.GetAuthorizationInfo(ctx.HttpContext.Request).GetAwaiter().GetResult();
+                if (auth?.UserId != null && auth.UserId != Guid.Empty) userId = auth.UserId;
+            }
+            catch { }
+
+            if (userId == Guid.Empty && ctx.RouteData.Values.TryGetValue("userId", out var rUid) && rUid != null && Guid.TryParse(rUid.ToString(), out var gUid))
+            {
+                userId = gUid;
+            }
+
+            var types = ExtractIncludeItemTypes(ctx.HttpContext);
+            bool wantAudio = types.Count == 0 || types.Contains("Audio") || types.Contains("Song");
+            bool wantAlbum = types.Count == 0 || types.Contains("MusicAlbum") || types.Contains("Album");
+            bool wantArtist = types.Count == 0 || types.Contains("MusicArtist") || types.Contains("Artist");
+
+            var favList = _favoritesTracker.GetFavorites(userId);
+            if (favList.Count == 0) return;
+
+            var existingIds = qr.Items.Select(i => i.Id).ToHashSet();
+            var additions = new List<BaseItemDto>();
+
+            foreach (var fav in favList)
+            {
+                if (!existingIds.Add(fav.ItemId)) continue;
+
+                if (_cache.TryGet(fav.ItemId, out var entry) && entry != null)
+                {
+                    if (entry.Kind == "track" && wantAudio)
+                    {
+                        _registrar.RegisterTrack(fav.ItemId, entry);
+                        additions.Add(BuildTrackDto(fav.ItemId, entry, isFavorite: true));
+                    }
+                    else if (entry.Kind == "album" && wantAlbum)
+                    {
+                        additions.Add(BuildAlbumDto(fav.ItemId, entry, isFavorite: true));
+                    }
+                    else if (entry.Kind == "artist" && wantArtist)
+                    {
+                        additions.Add(BuildArtistDto(fav.ItemId, entry, isFavorite: true));
+                    }
+                }
+            }
+
+            // Ensure all items returned in favorites query have IsFavorite = true
+            foreach (var item in qr.Items)
+            {
+                if (item.UserData != null) item.UserData.IsFavorite = true;
             }
 
             if (additions.Count > 0)
@@ -1224,11 +1323,13 @@ namespace Resono.Plugin.Filters
             };
         }
 
-        public static BaseItemDto BuildArtistDto(Guid id, ResonoItemCache.Entry e)
+        public static BaseItemDto BuildArtistDto(Guid id, ResonoItemCache.Entry e, bool isFavorite = false)
         {
             var imageTag = id.ToString("N");
-            var name = e.Name ?? "(unknown artist)";
+            var name = !string.IsNullOrWhiteSpace(e.Name) ? e.Name : "Artist";
             var pair = new[] { new NameGuidPair { Name = name, Id = id } };
+            var genres = (e.Genres != null && e.Genres.Count > 0) ? e.Genres.ToArray() : new[] { "Artist" };
+            var genrePairs = genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray();
             return new BaseItemDto
             {
                 Id = id,
@@ -1248,6 +1349,9 @@ namespace Resono.Plugin.Filters
                 ArtistItems = pair,
                 AlbumArtists = pair,
                 AlbumArtist = name,
+                Genres = genres,
+                GenreItems = genrePairs,
+                Overview = "Artist",
                 ChildCount = 50,
                 SongCount = 50,
                 AlbumCount = 20,
@@ -1256,21 +1360,34 @@ namespace Resono.Plugin.Filters
                 {
                     PlaybackPositionTicks = 0,
                     PlayCount = 0,
-                    IsFavorite = false,
+                    IsFavorite = isFavorite,
                     Played = false,
                     Key = id.ToString("N")
                 }
             };
         }
 
-        public static BaseItemDto BuildAlbumDto(Guid id, ResonoItemCache.Entry e)
+        public static BaseItemDto BuildAlbumDto(Guid id, ResonoItemCache.Entry e, bool isFavorite = false)
         {
             var imageTag = id.ToString("N");
-            NameGuidPair[]? artistPair = null;
-            if (!string.IsNullOrEmpty(e.ArtistName))
+
+            // Auto-heal missing ArtistName from tracks in cache:
+            var artistName = e.ArtistName;
+            if (string.IsNullOrWhiteSpace(artistName))
             {
-                artistPair = new[] { new NameGuidPair { Name = e.ArtistName, Id = e.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", e.ArtistName) } };
+                if (ResonoItemCache.Instance != null && ResonoItemCache.Instance.TryGetTrackByAlbumId(id, out var tr) && !string.IsNullOrWhiteSpace(tr?.ArtistName))
+                {
+                    artistName = tr.ArtistName;
+                    e.ArtistName = artistName;
+                    e.ArtistId ??= tr.ArtistId;
+                }
+                else
+                {
+                    artistName = "Various Artists";
+                }
             }
+
+            var artistPair = new[] { new NameGuidPair { Name = artistName, Id = e.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", artistName) } };
 
             var genresList = (e.Genres != null && e.Genres.Count > 0) ? e.Genres : null;
             if (genresList == null && ResonoItemDetailActionFilter.TryGetCachedAlbumGenres(id, out var cachedGenres))
@@ -1278,10 +1395,10 @@ namespace Resono.Plugin.Filters
                 genresList = cachedGenres;
                 e.Genres = cachedGenres;
             }
+            genresList ??= new List<string> { "Album" };
 
-            var genrePairs = genresList != null && genresList.Count > 0
-                ? genresList.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray()
-                : Array.Empty<NameGuidPair>();
+            var genrePairs = genresList.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray();
+            var prodYear = e.ProductionYear ?? (e.PremiereDate.HasValue ? e.PremiereDate.Value.Year : 2024);
 
             return new BaseItemDto
             {
@@ -1297,13 +1414,13 @@ namespace Resono.Plugin.Filters
                     { ImageType.Primary, new Dictionary<string, string> { { imageTag, "eODJO}t7%MWBt79FWBIUayRj00ayxut7t7_3ofofWBWB%MayIUWBay" } } }
                 },
                 PrimaryImageAspectRatio = 1.0,
-                Artists = !string.IsNullOrEmpty(e.ArtistName) ? new[] { e.ArtistName } : null,
-                AlbumArtist = e.ArtistName,
-                AlbumArtists = artistPair ?? Array.Empty<NameGuidPair>(),
-                ArtistItems = artistPair ?? Array.Empty<NameGuidPair>(),
-                ProductionYear = e.ProductionYear,
-                PremiereDate = e.PremiereDate,
-                Genres = genresList?.ToArray(),
+                Artists = new[] { artistName },
+                AlbumArtist = artistName,
+                AlbumArtists = artistPair,
+                ArtistItems = artistPair,
+                ProductionYear = prodYear,
+                PremiereDate = e.PremiereDate ?? new DateTime(prodYear, 1, 1),
+                Genres = genresList.ToArray(),
                 GenreItems = genrePairs,
                 IsFolder = true,
                 LocationType = LocationType.FileSystem,
@@ -1311,7 +1428,7 @@ namespace Resono.Plugin.Filters
                 {
                     PlaybackPositionTicks = 0,
                     PlayCount = 0,
-                    IsFavorite = false,
+                    IsFavorite = isFavorite,
                     Played = false,
                     Key = id.ToString("N")
                 }
@@ -1370,7 +1487,7 @@ namespace Resono.Plugin.Filters
             };
         }
 
-        public static BaseItemDto BuildTrackDto(Guid id, ResonoItemCache.Entry e)
+        public static BaseItemDto BuildTrackDto(Guid id, ResonoItemCache.Entry e, bool isFavorite = false)
         {
             var trackImageTag = id.ToString("N");
             var albumImageTag = e.AlbumId.HasValue ? e.AlbumId.Value.ToString("N") : trackImageTag;
@@ -1381,9 +1498,8 @@ namespace Resono.Plugin.Filters
                 artistPair = new[] { new NameGuidPair { Name = e.ArtistName, Id = e.ArtistId ?? ResonoItemCache.StubGuid("dz-artist", e.ArtistName) } };
             }
 
-            var genrePairs = e.Genres != null && e.Genres.Count > 0
-                ? e.Genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray()
-                : Array.Empty<NameGuidPair>();
+            var genres = (e.Genres != null && e.Genres.Count > 0) ? e.Genres.ToArray() : new[] { "Music" };
+            var genrePairs = genres.Select(g => new NameGuidPair { Name = g, Id = ResonoItemCache.StubGuid("dz-genre", g) }).ToArray();
 
             var mediaSource = BuildMediaSource(id, e);
 
@@ -1415,7 +1531,7 @@ namespace Resono.Plugin.Filters
                 RunTimeTicks = e.DurationMs.HasValue ? (long)e.DurationMs.Value * 10000 : null,
                 ProductionYear = e.ProductionYear,
                 PremiereDate = e.PremiereDate,
-                Genres = e.Genres?.ToArray(),
+                Genres = genres,
                 GenreItems = genrePairs,
                 IsFolder = false,
                 CanDownload = false,
@@ -1427,7 +1543,7 @@ namespace Resono.Plugin.Filters
                 {
                     PlaybackPositionTicks = 0,
                     PlayCount = 0,
-                    IsFavorite = false,
+                    IsFavorite = isFavorite,
                     Played = false,
                     Key = id.ToString("N")
                 }

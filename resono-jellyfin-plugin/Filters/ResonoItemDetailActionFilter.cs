@@ -30,6 +30,7 @@ namespace Resono.Plugin.Filters
         private readonly ResonoRecentlyPlayedTracker _recentlyPlayed;
         private readonly IAuthorizationContext _authContext;
         private readonly MediaBrowser.Controller.Library.ILibraryManager _libraryManager;
+        private readonly ResonoFavoritesTracker _favoritesTracker;
         private readonly MediaBrowser.Controller.Session.ISessionManager _sessionManager;
         private readonly ILogger<ResonoItemDetailActionFilter> _logger;
 
@@ -60,6 +61,7 @@ namespace Resono.Plugin.Filters
             IHttpClientFactory httpClientFactory,
             ResonoLibraryRegistrar registrar,
             ResonoRecentlyPlayedTracker recentlyPlayed,
+            ResonoFavoritesTracker favoritesTracker,
             IAuthorizationContext authContext,
             MediaBrowser.Controller.Library.ILibraryManager libraryManager,
             MediaBrowser.Controller.Session.ISessionManager sessionManager,
@@ -69,6 +71,7 @@ namespace Resono.Plugin.Filters
             _httpClientFactory = httpClientFactory;
             _registrar = registrar;
             _recentlyPlayed = recentlyPlayed;
+            _favoritesTracker = favoritesTracker;
             _authContext = authContext;
             _libraryManager = libraryManager;
             _sessionManager = sessionManager;
@@ -289,12 +292,79 @@ namespace Resono.Plugin.Filters
                 }
             }
 
-            // 2. Pin Favorite to Library (/Users/{u}/FavoriteItems/{id})
-            if (path.IndexOf("/FavoriteItems/", StringComparison.OrdinalIgnoreCase) >= 0 && HttpMethods.IsPost(req.Method))
+            // 2. FavoriteItems Interception (/Users/{u}/FavoriteItems/{id})
+            if (path.IndexOf("/FavoriteItems/", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                if (TryExtractGuidFromPath(path, out var favItemId) && _cache.TryGet(favItemId, out var favEntry) && favEntry is { Kind: "track" })
+                Guid favUserId = Guid.Empty;
+                try
                 {
-                    _ = PinTrackAsync(favEntry.SpotifyId ?? favItemId.ToString());
+                    var auth = _authContext.GetAuthorizationInfo(req).GetAwaiter().GetResult();
+                    if (auth?.UserId != null && auth.UserId != Guid.Empty) favUserId = auth.UserId;
+                }
+                catch { }
+
+                if (favUserId == Guid.Empty && ctx.RouteData.Values.TryGetValue("userId", out var rUserId) && rUserId != null && Guid.TryParse(rUserId.ToString(), out var gUid))
+                {
+                    favUserId = gUid;
+                }
+
+                Guid favItemId = Guid.Empty;
+                if (ctx.RouteData.Values.TryGetValue("id", out var rId) && rId != null && Guid.TryParse(rId.ToString(), out var gItemId))
+                {
+                    favItemId = gItemId;
+                }
+                else if (ctx.RouteData.Values.TryGetValue("itemId", out var rItemId) && rItemId != null && Guid.TryParse(rItemId.ToString(), out var gItemId2))
+                {
+                    favItemId = gItemId2;
+                }
+                else
+                {
+                    TryExtractGuidFromPath(path, out favItemId);
+                }
+
+                if (favItemId != Guid.Empty)
+                {
+                    bool isVirtual = _cache.TryGet(favItemId, out var favEntry);
+                    if (HttpMethods.IsPost(req.Method))
+                    {
+                        var kind = favEntry?.Kind ?? "track";
+                        _favoritesTracker.AddFavorite(favUserId, favItemId, kind);
+                        _logger.LogInformation("[Resono-Favorites] Added favorite ItemId={ItemId} (Kind={Kind}) for User={UserId}", favItemId, kind, favUserId);
+
+                        if (favEntry is { Kind: "track" })
+                        {
+                            _ = PinTrackAsync(favEntry.SpotifyId ?? favItemId.ToString());
+                        }
+
+                        if (isVirtual)
+                        {
+                            ctx.Result = new OkObjectResult(new UserItemDataDto
+                            {
+                                IsFavorite = true,
+                                Key = favItemId.ToString("N"),
+                                PlaybackPositionTicks = 0,
+                                PlayCount = 0
+                            });
+                            return;
+                        }
+                    }
+                    else if (HttpMethods.IsDelete(req.Method))
+                    {
+                        _favoritesTracker.RemoveFavorite(favUserId, favItemId);
+                        _logger.LogInformation("[Resono-Favorites] Removed favorite ItemId={ItemId} for User={UserId}", favItemId, favUserId);
+
+                        if (isVirtual)
+                        {
+                            ctx.Result = new OkObjectResult(new UserItemDataDto
+                            {
+                                IsFavorite = false,
+                                Key = favItemId.ToString("N"),
+                                PlaybackPositionTicks = 0,
+                                PlayCount = 0
+                            });
+                            return;
+                        }
+                    }
                 }
             }
 

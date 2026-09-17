@@ -49,10 +49,13 @@ namespace Resono.Plugin.Services
         private int _dirty;
         private static readonly TimeSpan SaveDebounce = TimeSpan.FromSeconds(2);
 
+        public static ResonoItemCache? Instance { get; private set; }
+
         public int Count => _items.Count;
 
         public ResonoItemCache(ILogger<ResonoItemCache>? log = null)
         {
+            Instance = this;
             _log = log;
             try
             {
@@ -119,6 +122,12 @@ namespace Resono.Plugin.Services
             return false;
         }
 
+        public bool TryGetTrackByAlbumId(Guid albumId, out Entry? track)
+        {
+            track = _items.Values.FirstOrDefault(e => e.Kind == "track" && e.AlbumId == albumId && !string.IsNullOrWhiteSpace(e.ArtistName));
+            return track != null;
+        }
+
         public IReadOnlyDictionary<Guid, Entry> Snapshot() =>
             _items.ToDictionary(kv => kv.Key, kv => kv.Value);
 
@@ -152,6 +161,25 @@ namespace Resono.Plugin.Services
                         _artistsByName[kv.Value.Name.Trim()] = kv.Key;
                     }
                 }
+
+                // Self-heal any cached albums that have empty ArtistName from their tracks
+                int healed = 0;
+                foreach (var album in _items.Values.Where(e => e.Kind == "album" && string.IsNullOrWhiteSpace(e.ArtistName)))
+                {
+                    var tr = _items.Values.FirstOrDefault(e => e.Kind == "track" && e.AlbumId == album.Id && !string.IsNullOrWhiteSpace(e.ArtistName));
+                    if (tr != null)
+                    {
+                        album.ArtistName = tr.ArtistName;
+                        album.ArtistId ??= tr.ArtistId;
+                        healed++;
+                    }
+                }
+                if (healed > 0)
+                {
+                    _log?.LogInformation("[Resono] Self-healed {N} cached albums with missing artist names", healed);
+                    ScheduleSave();
+                }
+
                 _log?.LogInformation("[Resono] Loaded {N} items from disk cache", loaded.Count);
             }
             catch (Exception ex)
