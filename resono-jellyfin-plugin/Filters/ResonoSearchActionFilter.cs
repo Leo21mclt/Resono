@@ -60,6 +60,7 @@ namespace Resono.Plugin.Filters
         private readonly ResonoFavoritesTracker _favoritesTracker;
         private readonly IAuthorizationContext _authContext;
         private readonly MediaBrowser.Controller.Library.ILibraryManager _libraryManager;
+        private readonly MediaBrowser.Controller.Session.ISessionManager _sessionManager;
         private readonly ILogger<ResonoSearchActionFilter> _logger;
 
         public ResonoSearchActionFilter(
@@ -70,6 +71,7 @@ namespace Resono.Plugin.Filters
             ResonoFavoritesTracker favoritesTracker,
             IAuthorizationContext authContext,
             MediaBrowser.Controller.Library.ILibraryManager libraryManager,
+            MediaBrowser.Controller.Session.ISessionManager sessionManager,
             ILogger<ResonoSearchActionFilter> logger)
         {
             _httpClientFactory = httpClientFactory;
@@ -79,6 +81,7 @@ namespace Resono.Plugin.Filters
             _favoritesTracker = favoritesTracker;
             _authContext = authContext;
             _libraryManager = libraryManager;
+            _sessionManager = sessionManager;
             _logger = logger;
         }
 
@@ -98,7 +101,9 @@ namespace Resono.Plugin.Filters
                 }
                 else if (ShouldAugmentFavorites(ctx))
                 {
-                    TryAugmentFavorites(ctx);
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.HttpContext.RequestAborted);
+                    cts.CancelAfter(TimeSpan.FromSeconds(6));
+                    await TryAugmentFavoritesAsync(ctx, cts.Token).ConfigureAwait(false);
                 }
                 else if (ShouldAugmentPlaylists(ctx))
                 {
@@ -793,25 +798,21 @@ namespace Resono.Plugin.Filters
                 : q.TryGetValue("IsFavorite", out var if2) ? if2.ToString() : string.Empty);
 
             return filters.IndexOf("IsFavorite", StringComparison.OrdinalIgnoreCase) >= 0
+                || filters.IndexOf("Favorite", StringComparison.OrdinalIgnoreCase) >= 0
                 || string.Equals(isFav, "true", StringComparison.OrdinalIgnoreCase);
         }
 
-        private void TryAugmentFavorites(ResultExecutingContext ctx)
+        private async Task TryAugmentFavoritesAsync(ResultExecutingContext ctx, CancellationToken ct)
         {
             if (ctx.Result is not ObjectResult or || or.Value is not QueryResult<BaseItemDto> qr) return;
 
-            Guid userId = Guid.Empty;
-            try
-            {
-                var auth = _authContext.GetAuthorizationInfo(ctx.HttpContext.Request).GetAwaiter().GetResult();
-                if (auth?.UserId != null && auth.UserId != Guid.Empty) userId = auth.UserId;
-            }
-            catch { }
+            Guid userId = await ResonoItemDetailActionFilter.ResolveUserIdAsync(
+                ctx.HttpContext.Request,
+                ctx.RouteData.Values,
+                _authContext,
+                _sessionManager).ConfigureAwait(false);
 
-            if (userId == Guid.Empty && ctx.RouteData.Values.TryGetValue("userId", out var rUid) && rUid != null && Guid.TryParse(rUid.ToString(), out var gUid))
-            {
-                userId = gUid;
-            }
+            if (userId == Guid.Empty) return;
 
             var types = ExtractIncludeItemTypes(ctx.HttpContext);
             bool wantAudio = types.Count == 0 || types.Contains("Audio") || types.Contains("Song");
@@ -828,7 +829,41 @@ namespace Resono.Plugin.Filters
             {
                 if (!existingIds.Add(fav.ItemId)) continue;
 
-                if (_cache.TryGet(fav.ItemId, out var entry) && entry != null)
+                if (!_cache.TryGet(fav.ItemId, out var entry) || entry == null)
+                {
+                    var cfg = Plugin.Instance?.Configuration;
+                    var gatewayUrl = GetEffectiveGatewayUrl(cfg?.GatewayUrl);
+                    try
+                    {
+                        var client = _httpClientFactory.CreateClient();
+                        var trackInfo = await client.GetFromJsonAsync<GatewayTrack>($"{gatewayUrl}/jellyfin/track/{fav.ItemId:N}", ct).ConfigureAwait(false);
+                        if (trackInfo != null)
+                        {
+                            var albId = !string.IsNullOrEmpty(trackInfo.AlbumId) ? ResonoItemCache.StubGuid("dz-album", trackInfo.AlbumId) : (Guid?)null;
+                            var artId = !string.IsNullOrEmpty(trackInfo.ArtistId) ? ResonoItemCache.StubGuid("dz-artist", trackInfo.ArtistId) : (Guid?)null;
+                            entry = new ResonoItemCache.Entry
+                            {
+                                Kind = "track",
+                                Name = trackInfo.Name,
+                                ArtistName = trackInfo.ArtistName,
+                                AlbumName = trackInfo.AlbumName,
+                                SpotifyId = trackInfo.Id,
+                                CanonicalId = trackInfo.CanonicalId,
+                                ImageUrl = trackInfo.ImageUrl,
+                                DurationMs = trackInfo.DurationMs,
+                                TrackNumber = trackInfo.TrackNumber,
+                                DiscNumber = trackInfo.DiscNumber,
+                                StreamUrl = !string.IsNullOrEmpty(trackInfo.StreamUrl) ? $"{gatewayUrl}{trackInfo.StreamUrl}" : $"{gatewayUrl}/playback/{trackInfo.Id}",
+                                AlbumId = albId,
+                                ArtistId = artId
+                            };
+                            _cache.Set(fav.ItemId, entry);
+                        }
+                    }
+                    catch { }
+                }
+
+                if (entry != null)
                 {
                     if (entry.Kind == "track" && wantAudio)
                     {
@@ -1006,6 +1041,51 @@ namespace Resono.Plugin.Filters
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to augment user playlists: {Message}", ex.Message);
+            }
+
+            // 2b. Add virtual "Canciones favoritas" playlist if user has favorites
+            try
+            {
+                Guid plUserId = await ResonoItemDetailActionFilter.ResolveUserIdAsync(
+                    ctx.HttpContext.Request,
+                    ctx.RouteData.Values,
+                    _authContext,
+                    _sessionManager).ConfigureAwait(false);
+
+                if (plUserId != Guid.Empty && _favoritesTracker.GetFavorites(plUserId).Count > 0)
+                {
+                    var favPlGuid = ResonoItemCache.StubGuid("dz-user-favorites", plUserId.ToString());
+                    if (existingIds.Add(favPlGuid))
+                    {
+                        var favPlDto = new BaseItemDto
+                        {
+                            Id = favPlGuid,
+                            Name = "Canciones favoritas",
+                            ServerId = Plugin.ServerSystemId,
+                            Type = BaseItemKind.Playlist,
+                            MediaType = MediaType.Audio,
+                            LocationType = LocationType.FileSystem,
+                            IsFolder = true,
+                            CanDelete = false,
+                            CanDownload = false,
+                            RunTimeTicks = 0,
+                            UserData = new UserItemDataDto
+                            {
+                                PlaybackPositionTicks = 0,
+                                PlayCount = 0,
+                                IsFavorite = true,
+                                Played = false,
+                                Key = favPlGuid.ToString("N")
+                            }
+                        };
+                        qr.Items = new[] { favPlDto }.Concat(qr.Items).ToArray();
+                        qr.TotalRecordCount = qr.Items.Count;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to augment favorites playlist: {Message}", ex.Message);
             }
 
             // 3. Augment with virtual discovery chart playlists if enabled
