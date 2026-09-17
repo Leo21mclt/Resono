@@ -1,1 +1,165 @@
-SEARCH_FULL_QUERY = "query SearchFull($query: String!, $firstGrid: Int!, $firstList: Int!, $includeRelatedContent: Boolean!, $channelPlaylistFirst: Int!) {\n  instantSearch(query: $query) {\n    bestResult {\n      __typename\n      ... on InstantSearchAlbumBestResult {\n        album {\n          ...SearchAlbum\n          __typename\n        }\n        __typename\n      }\n      ... on InstantSearchArtistBestResult {\n        artist {\n          ...BestResultArtist\n          __typename\n        }\n        relatedContent @include(if: $includeRelatedContent) {\n          ...RelatedContentArtist\n          __typename\n        }\n        __typename\n      }\n      ... on InstantSearchPlaylistBestResult {\n        playlist {\n          ...SearchPlaylist\n          __typename\n        }\n        __typename\n      }\n      ... on InstantSearchSmartTracklistBestResult {\n        smartTracklist {\n          ...BestResultSmartTracklist\n          __typename\n        }\n        __typename\n      }\n      ... on InstantSearchPodcastBestResult {\n        podcast {\n          ...SearchPodcast\n          __typename\n        }\n        __typename\n      }\n      ... on InstantSearchLivestreamBestResult {\n        livestream {\n          ...SearchLivestream\n          __typename\n        }\n        __typename\n      }\n      ... on InstantSearchTrackBestResult {\n        foundByLyrics\n        track {\n          ...TableTrack\n          __typename\n        }\n        __typename\n      }\n      ... on InstantSearchPodcastEpisodeBestResult {\n        podcastEpisode {\n          ...SearchPodcastEpisode\n          __typename\n        }\n        __typename\n      }\n      ... on InstantSearchFlowConfigBestResult {\n        flowConfig {\n          ...SearchFlowConfig\n          __typename\n        }\n        __typename\n      }\n      ... on InstantSearchChannelBestResult {\n        channel {\n          ...SearchChannel\n          __typename\n        }\n        relatedContent {\n          ...ChannelBestResultRelatedContent\n          __typename\n        }\n        __typename\n      }\n    }\n    results {\n      artists(first: $firstGrid) {\n        edges {\n          node {\n            ...SearchArtist\n            __typename\n          }\n          __typename\n        }\n        pageInfo {\n          endCursor\n          __typename\n        }\n        priority\n        __typename\n      }\n      albums(first: $firstGrid) {\n        edges {\n          node {\n            ...SearchAlbum\n            __typename\n          }\n          __typename\n        }\n        pageInfo {\n          endCursor\n          __typename\n        }\n        priority\n        __typename\n      }\n      channels(first: $firstGrid) {\n        edges {\n          node {\n            ...SearchChannel\n            __typename\n          }\n          __typename\n        }\n        pageInfo {\n          endCursor\n          __typename\n        }\n        priority\n        __typename\n      }\n      flowConfigs(first: $firstGrid) {\n        edges {\n          node {\n            ...SearchFlowConfig\n            __typename\n          }\n          __typename\n        }\n        pageInfo {\n          endCursor\n          __typename\n        }\n        priority\n        __typename\n      }\n      livestreams(first: $firstGrid) {\n        edges {\n          node {\n            ...SearchLivestream\n            __typename\n          }\n          __typename\n        }\n        pageInfo {\n          endCursor\n          __typename\n        }\n        priority\n        __typename\n      }\n      playlists(first: $firstGrid) {\n        edges {\n          node {\n            ...SearchPlaylist\n            __typename\n          }\n          __typename\n        }\n        pageInfo {\n          endCursor\n          __typename\n        }\n        priority\n        __typename\n      }\n      podcasts(first: $firstGrid) {\n        edges {\n          node {\n            ...SearchPodcast\n            __typename\n          }\n          __typename\n        }\n        pageInfo {\n          endCursor\n          __typename\n        }\n        priority\n        __typename\n      }\n      tracks(first: $firstList) {\n        edges {\n          node {\n            ...TableTrack\n            __typename\n          }\n          __typename\n        }\n        pageInfo {\n          endCursor\n          __typename\n        }\n        priority\n        __typename\n      }\n      users(first: $firstGrid) {\n        edges {\n          node {\n            ...SearchUser\n            __typename\n          }\n          __typename\n        }\n        pageInfo {\n          endCursor\n          __typename\n        }\n        priority\n        __typename\n      }\n      podcastEpisodes(first: $firstList) {\n        edges {\n          node {\n            ...SearchPodcastEpisode\n            __typename\n          }\n          __typename\n        }\n        pageInfo {\n          endCursor\n          __typename\n        }\n        priority\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n}\n\nfragment SearchAlbum on Album {\n  id\n  displayTitle\n  isFavorite\n  releaseDateAlbum: releaseDate\n  isExplicitAlbum: isExplicit\n  cover {\n    ...PictureLarge\n    __typename\n  }\n  contributors {\n    edges {\n      roles\n      node {\n        ... on Artist {\n          id\n          name\n          __typename\n        }\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n  tracksCount\n  __typename\n}\n\nfragment PictureLarge on Picture {\n  id\n  large: urls(pictureRequest: {width: 500, height: 500})\n  explicitStatus\n  __typename\n}\n\nfragment BestResultArtist on Artist {\n  ...SearchArtist\n  hasSmartRadio\n  hasTopTracks\n  __typename\n}\n\nfragment SearchArtist on Artist {\n  id\n  isFavorite\n  name\n  fansCount\n  picture {\n    ...PictureLarge\n    __typename\n  }\n  __typename\n}\n\nfragment RelatedContentArtist on InstantSearchArtistBestResultRelatedContent {\n  __typename\n  ... on InstantSearchArtistBestResultRelatedContentNewRelease {\n    album {\n      ...BestResultAlbumWithTracks\n      __typename\n    }\n    __typename\n  }\n  ... on InstantSearchArtistBestResultRelatedContentRelevantAlbum {\n    album {\n      ...BestResultAlbumWithTracks\n      __typename\n    }\n    __typename\n  }\n  ... on InstantSearchArtistBestResultRelatedContentTopTracks {\n    tracks {\n      ...TableTrack\n      __typename\n    }\n    __typename\n  }\n}\n\nfragment BestResultAlbumWithTracks on Album {\n  ...SearchAlbum\n  tracks {\n    edges {\n      node {\n        ...TableTrack\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n\nfragment TableTrack on Track {\n  id\n  title\n  duration\n  popularity\n  isExplicit\n  lyrics {\n    id\n    __typename\n  }\n  media {\n    id\n    rights {\n      ads {\n        available\n        availableAfter\n        __typename\n      }\n      sub {\n        available\n        availableAfter\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n  album {\n    id\n    displayTitle\n    cover {\n      ...PictureXSmall\n      ...PictureLarge\n      __typename\n    }\n    __typename\n  }\n  contributors {\n    edges {\n      node {\n        ... on Artist {\n          id\n          name\n          __typename\n        }\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n  credits: contributors(roles: [AUTHOR, COMPOSER]) {\n    edges {\n      roles\n      node {\n        ... on Artist {\n          id\n          name\n          __typename\n        }\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n\nfragment PictureXSmall on Picture {\n  id\n  xxx_small: urls(pictureRequest: {width: 40, height: 40})\n  explicitStatus\n  __typename\n}\n\nfragment SearchPlaylist on Playlist {\n  id\n  title\n  isFavorite\n  estimatedTracksCount\n  fansCount\n  isPrivate\n  isCollaborative\n  picture {\n    ...PictureLarge\n    __typename\n  }\n  owner {\n    id\n    name\n    __typename\n  }\n  __typename\n}\n\nfragment BestResultSmartTracklist on SmartTracklist {\n  id\n  title\n  cover {\n    ...PictureLarge\n    __typename\n  }\n  __typename\n}\n\nfragment SearchPodcast on Podcast {\n  id\n  displayTitle\n  isPodcastFavorite: isFavorite\n  cover {\n    ...PictureLarge\n    __typename\n  }\n  isExplicit\n  rawEpisodes\n  __typename\n}\n\nfragment SearchLivestream on Livestream {\n  id\n  name\n  cover {\n    ...PictureLarge\n    __typename\n  }\n  __typename\n}\n\nfragment SearchPodcastEpisode on PodcastEpisode {\n  id\n  title\n  description\n  duration\n  releaseDate\n  media {\n    url\n    __typename\n  }\n  podcast {\n    id\n    displayTitle\n    isExplicit\n    cover {\n      ...PictureSmall\n      ...PictureLarge\n      __typename\n    }\n    rights {\n      ads {\n        available\n        __typename\n      }\n      sub {\n        available\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n\nfragment PictureSmall on Picture {\n  id\n  small: urls(pictureRequest: {height: 100, width: 100})\n  explicitStatus\n  __typename\n}\n\nfragment SearchFlowConfig on FlowConfig {\n  id\n  title\n  visuals {\n    dynamicPageIcon {\n      id\n      large: urls(uiAssetRequest: {width: 500, height: 500})\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n\nfragment SearchChannel on Channel {\n  id\n  picture {\n    ...PictureLarge\n    __typename\n  }\n  logoAsset {\n    id\n    large: urls(uiAssetRequest: {width: 500, height: 0})\n    __typename\n  }\n  name\n  slug\n  url {\n    webUrl\n    __typename\n  }\n  backgroundColor\n  __typename\n}\n\nfragment ChannelBestResultRelatedContent on InstantSearchChannelBestResultRelatedContent {\n  flowConfig {\n    ...SearchFlowConfig\n    __typename\n  }\n  playlists(first: $channelPlaylistFirst) {\n    edges {\n      node {\n        ...SearchPlaylist\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n  __typename\n}\n\nfragment SearchUser on User {\n  id\n  name\n  picture {\n    ...PictureLarge\n    __typename\n  }\n  __typename\n}"
+SEARCH_FULL_QUERY = """query SearchFull($query: String!, $firstGrid: Int!, $firstList: Int!) {
+  instantSearch(query: $query) {
+    bestResult {
+      __typename
+      ... on InstantSearchAlbumBestResult {
+        album {
+          ...SearchAlbum
+          __typename
+        }
+        __typename
+      }
+      ... on InstantSearchArtistBestResult {
+        artist {
+          ...BestResultArtist
+          __typename
+        }
+        __typename
+      }
+      ... on InstantSearchTrackBestResult {
+        foundByLyrics
+        track {
+          ...TableTrack
+          __typename
+        }
+        __typename
+      }
+    }
+    results {
+      artists(first: $firstGrid) {
+        edges {
+          node {
+            ...SearchArtist
+            __typename
+          }
+          __typename
+        }
+        pageInfo {
+          endCursor
+          __typename
+        }
+        priority
+        __typename
+      }
+      albums(first: $firstGrid) {
+        edges {
+          node {
+            ...SearchAlbum
+            __typename
+          }
+          __typename
+        }
+        pageInfo {
+          endCursor
+          __typename
+        }
+        priority
+        __typename
+      }
+      tracks(first: $firstList) {
+        edges {
+          node {
+            ...TableTrack
+            __typename
+          }
+          __typename
+        }
+        pageInfo {
+          endCursor
+          __typename
+        }
+        priority
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}
+
+fragment SearchAlbum on Album {
+  id
+  displayTitle
+  releaseDateAlbum: releaseDate
+  isExplicitAlbum: isExplicit
+  cover {
+    ...PictureLarge
+    __typename
+  }
+  contributors {
+    edges {
+      roles
+      node {
+        ... on Artist {
+          id
+          name
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+  tracksCount
+  __typename
+}
+
+fragment PictureLarge on Picture {
+  id
+  large: urls(pictureRequest: {width: 500, height: 500})
+  explicitStatus
+  __typename
+}
+
+fragment BestResultArtist on Artist {
+  ...SearchArtist
+  hasSmartRadio
+  hasTopTracks
+  __typename
+}
+
+fragment SearchArtist on Artist {
+  id
+  name
+  fansCount
+  picture {
+    ...PictureLarge
+    __typename
+  }
+  __typename
+}
+
+fragment TableTrack on Track {
+  id
+  title
+  duration
+  popularity
+  isExplicit
+  album {
+    id
+    displayTitle
+    cover {
+      ...PictureLarge
+      __typename
+    }
+    __typename
+  }
+  contributors {
+    edges {
+      node {
+        ... on Artist {
+          id
+          name
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+  __typename
+}
+"""
+

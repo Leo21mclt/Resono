@@ -85,23 +85,32 @@ class DeezerProvider(CatalogProvider):
             "variables": {
                 "query": query,
                 "firstGrid": limit,
-                "firstList": limit,
-                "includeRelatedContent": False,
-                "channelPlaylistFirst": 5
+                "firstList": limit
             },
             "query": SEARCH_FULL_QUERY
         }
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "Origin": "https://www.deezer.com",
-            "Referer": "https://www.deezer.com/"
-        }
 
+        def build_headers(tok: str) -> dict:
+            return {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {tok}",
+                "Origin": "https://www.deezer.com",
+                "Referer": "https://www.deezer.com/"
+            }
+
+        client = await self._get_shared_client()
         try:
-            client = await self._get_shared_client()
-            r = await client.post("https://pipe.deezer.com/api", json=payload, headers=headers)
+            r = await client.post("https://pipe.deezer.com/api", json=payload, headers=build_headers(token))
+            if r.status_code in (401, 403):
+                # Invalidate expired token and retry once
+                self._jwt_token = None
+                self._jwt_expires_at = 0
+                token = await self._get_anonymous_jwt()
+                if not token:
+                    return None
+                r = await client.post("https://pipe.deezer.com/api", json=payload, headers=build_headers(token))
+
             if r.status_code != 200:
                 return None
             data = r.json()
@@ -109,7 +118,7 @@ class DeezerProvider(CatalogProvider):
             logger.debug(f"Deezer GraphQL request error: {e}")
             return None
 
-        instant = data.get("data", {}).get("instantSearch", {})
+        instant = (data.get("data") or {}).get("instantSearch") or {}
         if not instant:
             return None
 
@@ -130,84 +139,102 @@ class DeezerProvider(CatalogProvider):
                 return url.replace("/500x500", "/1000x1000")
             return url
 
+        def get_first_artist(node: dict | None) -> tuple[str, str]:
+            if not node or not isinstance(node, dict):
+                return "", "Unknown Artist"
+            contribs = (node.get("contributors") or {}).get("edges") or []
+            for c in contribs:
+                if not c or not isinstance(c, dict):
+                    continue
+                art_node = c.get("node")
+                if art_node and isinstance(art_node, dict):
+                    art_id = str(art_node.get("id") or "")
+                    art_name = art_node.get("name") or "Unknown Artist"
+                    if art_id or art_name != "Unknown Artist":
+                        return art_id, art_name
+            return "", "Unknown Artist"
+
         best_type = best.get("__typename")
         best_result_type = None
 
         if best_type == "InstantSearchAlbumBestResult":
             best_result_type = "album"
-            node = best.get("album") or {}
-            al_id = str(node.get("id", ""))
-            if al_id:
-                cover = clean_cover(((node.get("cover") or {}).get("large") or [None])[0])
-                contribs = (node.get("contributors") or {}).get("edges") or []
-                art_node = contribs[0].get("node") or {} if contribs else {}
-                art_id = str(art_node.get("id", ""))
-                art_name = art_node.get("name") or "Unknown Artist"
-                full_id = f"deezer:album:{al_id}"
-                rel_date = node.get("releaseDateAlbum")
-                prod_year = int(rel_date[:4]) if rel_date and len(rel_date) >= 4 and rel_date[:4].isdigit() else None
-                albums.append(CatalogAlbum(
-                    id=full_id,
-                    title=node.get("displayTitle") or "",
-                    artist_name=art_name,
-                    artist_id=f"deezer:artist:{art_id}" if art_id else "",
-                    release_date=rel_date,
-                    production_year=prod_year,
-                    artwork_url=cover
-                ))
-                seen_albums.add(full_id)
+            node = best.get("album")
+            if node and isinstance(node, dict):
+                al_id = str(node.get("id") or "")
+                if al_id:
+                    cover = clean_cover(((node.get("cover") or {}).get("large") or [None])[0])
+                    art_id, art_name = get_first_artist(node)
+                    full_id = f"deezer:album:{al_id}"
+                    rel_date = node.get("releaseDateAlbum")
+                    prod_year = int(rel_date[:4]) if rel_date and len(rel_date) >= 4 and rel_date[:4].isdigit() else None
+                    albums.append(CatalogAlbum(
+                        id=full_id,
+                        title=node.get("displayTitle") or "",
+                        artist_name=art_name,
+                        artist_id=f"deezer:artist:{art_id}" if art_id else "",
+                        release_date=rel_date,
+                        production_year=prod_year,
+                        artwork_url=cover
+                    ))
+                    seen_albums.add(full_id)
         elif best_type == "InstantSearchArtistBestResult":
             best_result_type = "artist"
-            node = best.get("artist") or {}
-            ar_id = str(node.get("id", ""))
-            if ar_id:
-                pic = clean_cover(((node.get("picture") or {}).get("large") or [None])[0])
-                full_id = f"deezer:artist:{ar_id}"
-                artists.append(CatalogArtist(
-                    id=full_id,
-                    name=node.get("name") or "",
-                    artwork_url=pic
-                ))
-                seen_artists.add(full_id)
+            node = best.get("artist")
+            if node and isinstance(node, dict):
+                ar_id = str(node.get("id") or "")
+                if ar_id:
+                    pic = clean_cover(((node.get("picture") or {}).get("large") or [None])[0])
+                    full_id = f"deezer:artist:{ar_id}"
+                    artists.append(CatalogArtist(
+                        id=full_id,
+                        name=node.get("name") or "",
+                        artwork_url=pic
+                    ))
+                    seen_artists.add(full_id)
         elif best_type == "InstantSearchTrackBestResult":
             best_result_type = "track"
-            node = best.get("track") or {}
-            tr_id = str(node.get("id", ""))
-            if tr_id:
-                alb_node = node.get("album") or {}
-                alb_id = str(alb_node.get("id", ""))
-                alb_title = alb_node.get("displayTitle") or "Unknown Album"
-                cover = clean_cover(((alb_node.get("cover") or {}).get("large") or [None])[0])
-                contribs = (node.get("contributors") or {}).get("edges") or []
-                art_node = contribs[0].get("node") or {} if contribs else {}
-                art_id = str(art_node.get("id", ""))
-                art_name = art_node.get("name") or "Unknown Artist"
-                full_id = f"deezer:track:{tr_id}"
-                tracks.append(CatalogTrack(
-                    id=full_id,
-                    title=node.get("title") or "",
-                    artist_name=art_name,
-                    artist_id=f"deezer:artist:{art_id}" if art_id else "",
-                    album_title=alb_title,
-                    album_id=f"deezer:album:{alb_id}" if alb_id else "",
-                    duration_ms=(node.get("duration") or 0) * 1000,
-                    artwork_url=cover,
-                    explicit=bool(node.get("isExplicit", False))
-                ))
-                seen_tracks.add(full_id)
+            node = best.get("track")
+            if node and isinstance(node, dict):
+                tr_id = str(node.get("id") or "")
+                if tr_id:
+                    alb_node = node.get("album")
+                    if alb_node and isinstance(alb_node, dict):
+                        alb_id = str(alb_node.get("id") or "")
+                        alb_title = alb_node.get("displayTitle") or "Unknown Album"
+                        cover = clean_cover(((alb_node.get("cover") or {}).get("large") or [None])[0])
+                    else:
+                        alb_id = ""
+                        alb_title = "Unknown Album"
+                        cover = None
+                    art_id, art_name = get_first_artist(node)
+                    full_id = f"deezer:track:{tr_id}"
+                    tracks.append(CatalogTrack(
+                        id=full_id,
+                        title=node.get("title") or "",
+                        artist_name=art_name,
+                        artist_id=f"deezer:artist:{art_id}" if art_id else "",
+                        album_title=alb_title,
+                        album_id=f"deezer:album:{alb_id}" if alb_id else "",
+                        duration_ms=(node.get("duration") or 0) * 1000,
+                        artwork_url=cover,
+                        explicit=bool(node.get("isExplicit", False))
+                    ))
+                    seen_tracks.add(full_id)
 
         # Process albums
         for edge in (results.get("albums") or {}).get("edges") or []:
-            node = edge.get("node") or {}
-            al_id = str(node.get("id", ""))
+            if not edge or not isinstance(edge, dict):
+                continue
+            node = edge.get("node")
+            if not node or not isinstance(node, dict):
+                continue
+            al_id = str(node.get("id") or "")
             full_id = f"deezer:album:{al_id}"
             if al_id and full_id not in seen_albums:
                 seen_albums.add(full_id)
                 cover = clean_cover(((node.get("cover") or {}).get("large") or [None])[0])
-                contribs = (node.get("contributors") or {}).get("edges") or []
-                art_node = contribs[0].get("node") or {} if contribs else {}
-                art_id = str(art_node.get("id", ""))
-                art_name = art_node.get("name") or "Unknown Artist"
+                art_id, art_name = get_first_artist(node)
                 rel_date = node.get("releaseDateAlbum")
                 prod_year = int(rel_date[:4]) if rel_date and len(rel_date) >= 4 and rel_date[:4].isdigit() else None
                 albums.append(CatalogAlbum(
@@ -222,8 +249,12 @@ class DeezerProvider(CatalogProvider):
 
         # Process artists
         for edge in (results.get("artists") or {}).get("edges") or []:
-            node = edge.get("node") or {}
-            ar_id = str(node.get("id", ""))
+            if not edge or not isinstance(edge, dict):
+                continue
+            node = edge.get("node")
+            if not node or not isinstance(node, dict):
+                continue
+            ar_id = str(node.get("id") or "")
             full_id = f"deezer:artist:{ar_id}"
             if ar_id and full_id not in seen_artists:
                 seen_artists.add(full_id)
@@ -236,19 +267,25 @@ class DeezerProvider(CatalogProvider):
 
         # Process tracks
         for edge in (results.get("tracks") or {}).get("edges") or []:
-            node = edge.get("node") or {}
-            tr_id = str(node.get("id", ""))
+            if not edge or not isinstance(edge, dict):
+                continue
+            node = edge.get("node")
+            if not node or not isinstance(node, dict):
+                continue
+            tr_id = str(node.get("id") or "")
             full_id = f"deezer:track:{tr_id}"
             if tr_id and full_id not in seen_tracks:
                 seen_tracks.add(full_id)
-                alb_node = node.get("album") or {}
-                alb_id = str(alb_node.get("id", ""))
-                alb_title = alb_node.get("displayTitle") or "Unknown Album"
-                cover = clean_cover(((alb_node.get("cover") or {}).get("large") or [None])[0])
-                contribs = (node.get("contributors") or {}).get("edges") or []
-                art_node = contribs[0].get("node") or {} if contribs else {}
-                art_id = str(art_node.get("id", ""))
-                art_name = art_node.get("name") or "Unknown Artist"
+                alb_node = node.get("album")
+                if alb_node and isinstance(alb_node, dict):
+                    alb_id = str(alb_node.get("id") or "")
+                    alb_title = alb_node.get("displayTitle") or "Unknown Album"
+                    cover = clean_cover(((alb_node.get("cover") or {}).get("large") or [None])[0])
+                else:
+                    alb_id = ""
+                    alb_title = "Unknown Album"
+                    cover = None
+                art_id, art_name = get_first_artist(node)
                 tracks.append(CatalogTrack(
                     id=full_id,
                     title=node.get("title") or "",
@@ -270,6 +307,7 @@ class DeezerProvider(CatalogProvider):
             tracks=tracks[:limit],
             best_result_type=best_result_type
         )
+
 
     async def search(self, query: str, limit: int = 20) -> CatalogSearchResult:
         clean_q = query.strip()
