@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     PRIMARY_PLAYBACK_SOURCE: str = "deezer"  # "deezer" | "soulseek"
     FALLBACK_PLAYBACK_SOURCE: str = "none"  # "none" | "soulseek" | "deezer"
     DEEZER_ARL: str | None = None
+    DEEZER_PIPE_URL: str = "https://search.leo21-mclt.workers.dev/api"
 
     # Storage paths
     DATA_DIR: Path = Path("./data")

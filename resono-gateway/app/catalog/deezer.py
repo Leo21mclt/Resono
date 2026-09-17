@@ -7,6 +7,7 @@ from typing import Any
 from app.catalog.models import CatalogSearchResult, CatalogArtist, CatalogAlbum, CatalogTrack
 from app.catalog.provider import CatalogProvider
 from app.catalog.deezer_query import SEARCH_FULL_QUERY
+from app.config import settings
 
 logger = logging.getLogger("resono.catalog.deezer")
 
@@ -17,6 +18,7 @@ class DeezerProvider(CatalogProvider):
     """
     def __init__(self):
         self.base_url = "https://api.deezer.com"
+        self.pipe_url = getattr(settings, "DEEZER_PIPE_URL", "https://pipe.deezer.com/api")
         self._jwt_token: str | None = None
         self._jwt_expires_at: float = 0.0
         self._jwt_lock = asyncio.Lock()
@@ -32,7 +34,7 @@ class DeezerProvider(CatalogProvider):
             async with self._client_lock:
                 if self._shared_client is None or self._shared_client.is_closed:
                     self._shared_client = httpx.AsyncClient(
-                        timeout=httpx.Timeout(10.0, connect=4.0),
+                        timeout=httpx.Timeout(4.0, connect=2.0),
                         limits=httpx.Limits(max_keepalive_connections=20, max_connections=40, keepalive_expiry=60.0),
                         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"}
                     )
@@ -101,7 +103,7 @@ class DeezerProvider(CatalogProvider):
 
         client = await self._get_shared_client()
         try:
-            r = await client.post("https://pipe.deezer.com/api", json=payload, headers=build_headers(token))
+            r = await client.post(self.pipe_url, json=payload, headers=build_headers(token))
             if r.status_code in (401, 403):
                 # Invalidate expired token and retry once
                 self._jwt_token = None
@@ -109,7 +111,7 @@ class DeezerProvider(CatalogProvider):
                 token = await self._get_anonymous_jwt()
                 if not token:
                     return None
-                r = await client.post("https://pipe.deezer.com/api", json=payload, headers=build_headers(token))
+                r = await client.post(self.pipe_url, json=payload, headers=build_headers(token))
 
             if r.status_code != 200:
                 return None
