@@ -2,6 +2,8 @@ services:
   resono-plugin-init:
     image: alpine:latest
     container_name: resono-plugin-init
+    environment:
+      - RESONO_AUTO_UPDATE_PLUGIN=${RESONO_AUTO_UPDATE_PLUGIN:-true}
     volumes:
       - ${JELLYFIN_CONFIG_DIR:-./config/jellyfin}/plugins/Resono:/target
     entrypoint: ["/bin/sh", "-c"]
