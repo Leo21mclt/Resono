@@ -97,7 +97,7 @@ namespace Resono.Plugin.Filters
                 }
                 else if (ShouldAugmentRecentlyPlayed(ctx))
                 {
-                    TryAugmentRecentlyPlayed(ctx);
+                    await TryAugmentRecentlyPlayedAsync(ctx).ConfigureAwait(false);
                 }
                 else if (ShouldAugmentFavorites(ctx))
                 {
@@ -222,10 +222,12 @@ namespace Resono.Plugin.Filters
 
             if (searchData is null) return;
 
+            Guid searchUserId = await ResonoItemDetailActionFilter.ResolveUserIdAsync(ctx.HttpContext.Request, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
+
             switch (or.Value)
             {
                 case QueryResult<BaseItemDto> qr:
-                    AugmentItems(qr, searchData, gatewayUrl, ctx.HttpContext);
+                    AugmentItems(qr, searchData, gatewayUrl, ctx.HttpContext, searchUserId);
                     break;
                 case SearchHintResult sr:
                     or.Value = AugmentHints(sr, searchData, gatewayUrl);
@@ -260,7 +262,7 @@ namespace Resono.Plugin.Filters
             }
         }
 
-        private void AugmentItems(QueryResult<BaseItemDto> qr, GatewaySearchResponse data, string gatewayUrl, HttpContext httpCtx)
+        private void AugmentItems(QueryResult<BaseItemDto> qr, GatewaySearchResponse data, string gatewayUrl, HttpContext httpCtx, Guid searchUserId)
         {
             var requestedTypes = ExtractIncludeItemTypes(httpCtx);
             bool hasTypeFilter = requestedTypes.Count > 0;
@@ -278,14 +280,6 @@ namespace Resono.Plugin.Filters
                 wantAlbums = false;
                 wantTracks = false;
             }
-
-            Guid searchUserId = Guid.Empty;
-            try
-            {
-                var auth = _authContext.GetAuthorizationInfo(httpCtx.Request).GetAwaiter().GetResult();
-                if (auth?.UserId != null && auth.UserId != Guid.Empty) searchUserId = auth.UserId;
-            }
-            catch { }
 
             var gatewayItems = new List<BaseItemDto>();
             var gatewayIds = new HashSet<Guid>();
@@ -730,17 +724,11 @@ namespace Resono.Plugin.Filters
             return ctx.Result is ObjectResult { Value: QueryResult<BaseItemDto> };
         }
 
-        private void TryAugmentRecentlyPlayed(ResultExecutingContext ctx)
+        private async Task TryAugmentRecentlyPlayedAsync(ResultExecutingContext ctx)
         {
             if (ctx.Result is not ObjectResult or || or.Value is not QueryResult<BaseItemDto> qr) return;
 
-            Guid userId = Guid.Empty;
-            try
-            {
-                var auth = _authContext.GetAuthorizationInfo(ctx.HttpContext.Request).GetAwaiter().GetResult();
-                if (auth?.UserId != null && auth.UserId != Guid.Empty) userId = auth.UserId;
-            }
-            catch { }
+            Guid userId = await ResonoItemDetailActionFilter.ResolveUserIdAsync(ctx.HttpContext.Request, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
 
             var limit = 30;
             if (ctx.HttpContext.Request.Query.TryGetValue("Limit", out var lv) && int.TryParse(lv.ToString(), out var lp))
@@ -1149,13 +1137,7 @@ namespace Resono.Plugin.Filters
             bool wantArtists = types.Contains("MusicArtist") || types.Contains("Artist") || path.StartsWith("/Artists", StringComparison.OrdinalIgnoreCase);
             bool wantAlbums = types.Contains("MusicAlbum") || types.Contains("Album");
 
-            Guid userId = Guid.Empty;
-            try
-            {
-                var auth = _authContext.GetAuthorizationInfo(ctx.HttpContext.Request).GetAwaiter().GetResult();
-                if (auth?.UserId != null && auth.UserId != Guid.Empty) userId = auth.UserId;
-            }
-            catch { }
+            Guid userId = await ResonoItemDetailActionFilter.ResolveUserIdAsync(ctx.HttpContext.Request, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
 
             if (wantAlbums)
             {

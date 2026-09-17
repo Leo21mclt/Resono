@@ -514,9 +514,12 @@ namespace Resono.Plugin.Filters
                 if (singleEntry != null)
                 {
                     if (singleEntry.Id == Guid.Empty) singleEntry.Id = singleId;
-                    if (singleEntry.Kind == "album" && (singleEntry.ProductionYear == null || singleEntry.Genres == null || singleEntry.Genres.Count == 0 || string.IsNullOrEmpty(singleEntry.ArtistName)))
+                    if (singleEntry.Kind == "album" && (singleEntry.ProductionYear == null || singleEntry.Genres == null || singleEntry.Genres.Count == 0))
                     {
-                        await FetchAlbumTracksAsync(singleEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        _ = Task.Run(async () =>
+                        {
+                            try { await FetchAlbumTracksAsync(singleEntry, CancellationToken.None).ConfigureAwait(false); } catch { }
+                        });
                     }
                     _logger.LogInformation("[Resono] Serving Single-Item Detail for {Id} ({Kind}: '{Name}')", singleId, singleEntry.Kind, singleEntry.Name);
 
@@ -596,9 +599,12 @@ namespace Resono.Plugin.Filters
                         if (sEntry != null)
                         {
                             if (sEntry.Id == Guid.Empty) sEntry.Id = sId;
-                            if (sEntry.Kind == "album" && (sEntry.ProductionYear == null || sEntry.Genres == null || sEntry.Genres.Count == 0 || string.IsNullOrEmpty(sEntry.ArtistName)))
+                            if (sEntry.Kind == "album" && (sEntry.ProductionYear == null || sEntry.Genres == null || sEntry.Genres.Count == 0))
                             {
-                                await FetchAlbumTracksAsync(sEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                                _ = Task.Run(async () =>
+                                {
+                                    try { await FetchAlbumTracksAsync(sEntry, CancellationToken.None).ConfigureAwait(false); } catch { }
+                                });
                             }
 
                             bool isFav = (idUserId != Guid.Empty) && _favoritesTracker.IsFavorite(idUserId, sId);
@@ -837,13 +843,7 @@ namespace Resono.Plugin.Filters
                 var types = ResonoSearchActionFilter.ExtractIncludeItemTypes(ctx.HttpContext);
                 bool wantsAlbums = types.Contains("MusicAlbum") || types.Contains("Album");
 
-                Guid userId = Guid.Empty;
-                try
-                {
-                    var auth = _authContext.GetAuthorizationInfo(ctx.HttpContext.Request).GetAwaiter().GetResult();
-                    if (auth?.UserId != null && auth.UserId != Guid.Empty) userId = auth.UserId;
-                }
-                catch { }
+                Guid userId = await ResolveUserIdAsync(ctx.HttpContext.Request, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
 
                 if (latestOr.Value is BaseItemDto[] emptyArray && emptyArray.Length == 0)
                 {
