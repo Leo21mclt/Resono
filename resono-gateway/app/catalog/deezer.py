@@ -20,10 +20,23 @@ class DeezerProvider(CatalogProvider):
         self._jwt_token: str | None = None
         self._jwt_expires_at: float = 0.0
         self._jwt_lock = asyncio.Lock()
+        self._shared_client: httpx.AsyncClient | None = None
+        self._client_lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
         return "deezer"
+
+    async def _get_shared_client(self) -> httpx.AsyncClient:
+        if self._shared_client is None or self._shared_client.is_closed:
+            async with self._client_lock:
+                if self._shared_client is None or self._shared_client.is_closed:
+                    self._shared_client = httpx.AsyncClient(
+                        timeout=httpx.Timeout(10.0, connect=4.0),
+                        limits=httpx.Limits(max_keepalive_connections=20, max_connections=40, keepalive_expiry=60.0),
+                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"}
+                    )
+        return self._shared_client
 
     def _get_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -42,22 +55,22 @@ class DeezerProvider(CatalogProvider):
                 return self._jwt_token
 
             try:
-                async with httpx.AsyncClient(timeout=8.0) as client:
-                    r = await client.post(
-                        "https://auth.deezer.com/login/anonymous?jo=p&rto=c",
-                        json={},
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-                            "Origin": "https://www.deezer.com",
-                            "Referer": "https://www.deezer.com/"
-                        }
-                    )
-                    if r.status_code == 200:
-                        token = r.json().get("jwt")
-                        if token:
-                            self._jwt_token = token
-                            self._jwt_expires_at = now + 3000
-                            return token
+                client = await self._get_shared_client()
+                r = await client.post(
+                    "https://auth.deezer.com/login/anonymous?jo=p&rto=c",
+                    json={},
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+                        "Origin": "https://www.deezer.com",
+                        "Referer": "https://www.deezer.com/"
+                    }
+                )
+                if r.status_code == 200:
+                    token = r.json().get("jwt")
+                    if token:
+                        self._jwt_token = token
+                        self._jwt_expires_at = now + 3000
+                        return token
             except Exception as e:
                 logger.warning(f"Failed to fetch anonymous Deezer JWT: {e}")
             return None
@@ -87,11 +100,11 @@ class DeezerProvider(CatalogProvider):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                r = await client.post("https://pipe.deezer.com/api", json=payload, headers=headers)
-                if r.status_code != 200:
-                    return None
-                data = r.json()
+            client = await self._get_shared_client()
+            r = await client.post("https://pipe.deezer.com/api", json=payload, headers=headers)
+            if r.status_code != 200:
+                return None
+            data = r.json()
         except Exception as e:
             logger.debug(f"Deezer GraphQL request error: {e}")
             return None
@@ -582,12 +595,20 @@ class DeezerProvider(CatalogProvider):
                 res.raise_for_status()
                 data = res.json()
             items = data.get("data", [])
+            if not name and items:
+                try:
+                    ar_res = await client.get(f"/artist/{resolved_id}")
+                    if ar_res.status_code == 200:
+                        name = ar_res.json().get("name")
+                except Exception:
+                    pass
+
             albums: list[CatalogAlbum] = []
             for it in items:
                 cover = it.get("cover_xl") or it.get("cover_big")
                 r_date = it.get("release_date")
                 prod_year = int(r_date[:4]) if r_date and len(r_date) >= 4 and r_date[:4].isdigit() else None
-                art_name = it.get("artist", {}).get("name") or name or ""
+                art_name = it.get("artist", {}).get("name") or name or "Various Artists"
                 albums.append(CatalogAlbum(
                     id=f"deezer:album:{it.get('id')}",
                     title=it.get("title", "Unknown Album"),

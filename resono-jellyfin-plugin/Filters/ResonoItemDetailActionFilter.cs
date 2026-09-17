@@ -17,6 +17,7 @@ using MediaBrowser.Model.Querying;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
 using Resono.Plugin.Services;
 
@@ -30,6 +31,7 @@ namespace Resono.Plugin.Filters
         private readonly ResonoRecentlyPlayedTracker _recentlyPlayed;
         private readonly IAuthorizationContext _authContext;
         private readonly MediaBrowser.Controller.Library.ILibraryManager _libraryManager;
+        private readonly ResonoFavoritesTracker _favoritesTracker;
         private readonly MediaBrowser.Controller.Session.ISessionManager _sessionManager;
         private readonly ILogger<ResonoItemDetailActionFilter> _logger;
 
@@ -60,6 +62,7 @@ namespace Resono.Plugin.Filters
             IHttpClientFactory httpClientFactory,
             ResonoLibraryRegistrar registrar,
             ResonoRecentlyPlayedTracker recentlyPlayed,
+            ResonoFavoritesTracker favoritesTracker,
             IAuthorizationContext authContext,
             MediaBrowser.Controller.Library.ILibraryManager libraryManager,
             MediaBrowser.Controller.Session.ISessionManager sessionManager,
@@ -69,6 +72,7 @@ namespace Resono.Plugin.Filters
             _httpClientFactory = httpClientFactory;
             _registrar = registrar;
             _recentlyPlayed = recentlyPlayed;
+            _favoritesTracker = favoritesTracker;
             _authContext = authContext;
             _libraryManager = libraryManager;
             _sessionManager = sessionManager;
@@ -289,12 +293,92 @@ namespace Resono.Plugin.Filters
                 }
             }
 
-            // 2. Pin Favorite to Library (/Users/{u}/FavoriteItems/{id})
-            if (path.IndexOf("/FavoriteItems/", StringComparison.OrdinalIgnoreCase) >= 0 && HttpMethods.IsPost(req.Method))
+            // 2. FavoriteItems Interception (/Users/{u}/FavoriteItems/{id} and /UserFavoriteItems/{id})
+            if (path.IndexOf("/FavoriteItems", StringComparison.OrdinalIgnoreCase) >= 0
+                || path.IndexOf("/UserFavoriteItems", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                if (TryExtractGuidFromPath(path, out var favItemId) && _cache.TryGet(favItemId, out var favEntry) && favEntry is { Kind: "track" })
+                Guid favUserId = await ResolveUserIdAsync(req, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
+
+                Guid favItemId = Guid.Empty;
+                if (ctx.RouteData.Values.TryGetValue("id", out var rId) && rId != null && Guid.TryParse(rId.ToString(), out var gItemId))
                 {
-                    _ = PinTrackAsync(favEntry.SpotifyId ?? favItemId.ToString());
+                    favItemId = gItemId;
+                }
+                else if (ctx.RouteData.Values.TryGetValue("itemId", out var rItemId) && rItemId != null && Guid.TryParse(rItemId.ToString(), out var gItemId2))
+                {
+                    favItemId = gItemId2;
+                }
+                else
+                {
+                    TryExtractGuidFromPath(path, out favItemId);
+                }
+
+                if (favItemId != Guid.Empty)
+                {
+                    bool isVirtual = _cache.TryGet(favItemId, out var favEntry);
+                    if (!isVirtual)
+                    {
+                        favEntry = await TryResolveItemFromGatewayAsync(favItemId, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        isVirtual = (favEntry != null);
+                    }
+
+                    bool isLocal = _libraryManager.GetItemById(favItemId) != null;
+
+                    if (HttpMethods.IsPost(req.Method))
+                    {
+                        var kind = favEntry?.Kind ?? "track";
+                        _favoritesTracker.AddFavorite(favUserId, favItemId, kind);
+                        _logger.LogInformation("[Resono-Favorites] Added favorite ItemId={ItemId} (Kind={Kind}) for User={UserId}", favItemId, kind, favUserId);
+
+                        if (favEntry is { Kind: "track" })
+                        {
+                            _ = PinTrackAsync(favEntry.SpotifyId ?? favItemId.ToString());
+                        }
+
+                        if (!isLocal || isVirtual || favEntry != null)
+                        {
+                            ctx.Result = new OkObjectResult(new UserItemDataDto
+                            {
+                                IsFavorite = true,
+                                Key = favItemId.ToString("N"),
+                                PlaybackPositionTicks = 0,
+                                PlayCount = 0
+                            });
+                            return;
+                        }
+                    }
+                    else if (HttpMethods.IsDelete(req.Method))
+                    {
+                        _favoritesTracker.RemoveFavorite(favUserId, favItemId);
+                        _logger.LogInformation("[Resono-Favorites] Removed favorite ItemId={ItemId} for User={UserId}", favItemId, favUserId);
+
+                        if (!isLocal || isVirtual || favEntry != null)
+                        {
+                            ctx.Result = new OkObjectResult(new UserItemDataDto
+                            {
+                                IsFavorite = false,
+                                Key = favItemId.ToString("N"),
+                                PlaybackPositionTicks = 0,
+                                PlayCount = 0
+                            });
+                            return;
+                        }
+                    }
+                    else if (HttpMethods.IsGet(req.Method))
+                    {
+                        bool isFav = _favoritesTracker.IsFavorite(favUserId, favItemId);
+                        if (!isLocal || isVirtual || favEntry != null)
+                        {
+                            ctx.Result = new OkObjectResult(new UserItemDataDto
+                            {
+                                IsFavorite = isFav,
+                                Key = favItemId.ToString("N"),
+                                PlaybackPositionTicks = 0,
+                                PlayCount = 0
+                            });
+                            return;
+                        }
+                    }
                 }
             }
 
@@ -392,6 +476,35 @@ namespace Resono.Plugin.Filters
             // 5. Single-Item Detail (/Items/{id}, /Users/{u}/Items/{id}, /Playlists/{id})
             if (TryExtractSingleItemId(ctx, out var singleId))
             {
+                Guid detailUserId = await ResolveUserIdAsync(req, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
+                var userFavPlId = (detailUserId != Guid.Empty) ? ResonoItemCache.StubGuid("dz-user-favorites", detailUserId.ToString()) : Guid.Empty;
+
+                if (userFavPlId != Guid.Empty && singleId == userFavPlId)
+                {
+                    var favPlDto = new BaseItemDto
+                    {
+                        Id = userFavPlId,
+                        Name = "Canciones favoritas",
+                        ServerId = Plugin.ServerSystemId,
+                        Type = BaseItemKind.Playlist,
+                        MediaType = MediaType.Audio,
+                        LocationType = LocationType.FileSystem,
+                        IsFolder = true,
+                        CanDelete = false,
+                        CanDownload = false,
+                        UserData = new UserItemDataDto
+                        {
+                            PlaybackPositionTicks = 0,
+                            PlayCount = 0,
+                            IsFavorite = true,
+                            Played = false,
+                            Key = userFavPlId.ToString("N")
+                        }
+                    };
+                    ctx.Result = new OkObjectResult(favPlDto);
+                    return;
+                }
+
                 _cache.TryGet(singleId, out var singleEntry);
                 if (singleEntry == null)
                 {
@@ -401,17 +514,23 @@ namespace Resono.Plugin.Filters
                 if (singleEntry != null)
                 {
                     if (singleEntry.Id == Guid.Empty) singleEntry.Id = singleId;
-                    if (singleEntry.Kind == "album" && (singleEntry.ProductionYear == null || singleEntry.Genres == null || singleEntry.Genres.Count == 0 || string.IsNullOrEmpty(singleEntry.ArtistName)))
+                    if (singleEntry.Kind == "album" && (singleEntry.ProductionYear == null || singleEntry.Genres == null || singleEntry.Genres.Count == 0))
                     {
-                        await FetchAlbumTracksAsync(singleEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        _ = Task.Run(async () =>
+                        {
+                            try { await FetchAlbumTracksAsync(singleEntry, CancellationToken.None).ConfigureAwait(false); } catch { }
+                        });
                     }
                     _logger.LogInformation("[Resono] Serving Single-Item Detail for {Id} ({Kind}: '{Name}')", singleId, singleEntry.Kind, singleEntry.Name);
+
+                    bool isFav = (detailUserId != Guid.Empty) && _favoritesTracker.IsFavorite(detailUserId, singleId);
+
                     BaseItemDto dto = singleEntry.Kind switch
                     {
-                        "artist" => ResonoSearchActionFilter.BuildArtistDto(singleId, singleEntry),
-                        "album" => ResonoSearchActionFilter.BuildAlbumDto(singleId, singleEntry),
+                        "artist" => ResonoSearchActionFilter.BuildArtistDto(singleId, singleEntry, isFav),
+                        "album" => ResonoSearchActionFilter.BuildAlbumDto(singleId, singleEntry, isFav),
                         "playlist" => ResonoSearchActionFilter.BuildPlaylistDto(singleId, singleEntry),
-                        _ => ResonoSearchActionFilter.BuildTrackDto(singleId, singleEntry)
+                        _ => ResonoSearchActionFilter.BuildTrackDto(singleId, singleEntry, isFav)
                     };
                     ctx.Result = new OkObjectResult(dto);
                     return;
@@ -421,15 +540,44 @@ namespace Resono.Plugin.Filters
             // 6. Virtual Playlist Tracks (/Playlists/{id}/Items)
             if (path.IndexOf("/Playlists/", StringComparison.OrdinalIgnoreCase) >= 0 && path.TrimEnd('/').EndsWith("/Items", StringComparison.OrdinalIgnoreCase))
             {
-                if (TryExtractGuidFromPath(path, out var plId) && _cache.TryGet(plId, out var plEntry) && plEntry is { Kind: "playlist" })
+                if (TryExtractGuidFromPath(path, out var plId))
                 {
-                    var tracks = await FetchChartTracksAsync(plEntry.SpotifyId ?? "global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
-                    ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
+                    Guid plUserId = await ResolveUserIdAsync(req, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
+                    var userFavPlId = (plUserId != Guid.Empty) ? ResonoItemCache.StubGuid("dz-user-favorites", plUserId.ToString()) : Guid.Empty;
+
+                    if (userFavPlId != Guid.Empty && plId == userFavPlId)
                     {
-                        Items = tracks.ToArray(),
-                        TotalRecordCount = tracks.Count
-                    });
-                    return;
+                        var favList = _favoritesTracker.GetFavorites(plUserId);
+                        var favTracks = new List<BaseItemDto>();
+                        foreach (var fav in favList)
+                        {
+                            if (!_cache.TryGet(fav.ItemId, out var entry) || entry == null)
+                            {
+                                entry = await TryResolveItemFromGatewayAsync(fav.ItemId, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                            }
+                            if (entry != null && entry.Kind == "track")
+                            {
+                                favTracks.Add(ResonoSearchActionFilter.BuildTrackDto(fav.ItemId, entry, isFavorite: true));
+                            }
+                        }
+                        ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
+                        {
+                            Items = favTracks.ToArray(),
+                            TotalRecordCount = favTracks.Count
+                        });
+                        return;
+                    }
+
+                    if (_cache.TryGet(plId, out var plEntry) && plEntry is { Kind: "playlist" })
+                    {
+                        var tracks = await FetchChartTracksAsync(plEntry.SpotifyId ?? "global", ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                        ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
+                        {
+                            Items = tracks.ToArray(),
+                            TotalRecordCount = tracks.Count
+                        });
+                        return;
+                    }
                 }
             }
 
@@ -441,6 +589,7 @@ namespace Resono.Plugin.Filters
                 if (TryExtractGuidListFromQuery(req, "ids", out var specificIds) || TryExtractGuidListFromQuery(req, "Ids", out specificIds))
                 {
                     var matchingItems = new List<BaseItemDto>();
+                    Guid idUserId = await ResolveUserIdAsync(req, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
                     foreach (var sId in specificIds)
                     {
                         if (!_cache.TryGet(sId, out var sEntry) || sEntry == null)
@@ -450,18 +599,22 @@ namespace Resono.Plugin.Filters
                         if (sEntry != null)
                         {
                             if (sEntry.Id == Guid.Empty) sEntry.Id = sId;
-                            if (sEntry.Kind == "album" && (sEntry.ProductionYear == null || sEntry.Genres == null || sEntry.Genres.Count == 0 || string.IsNullOrEmpty(sEntry.ArtistName)))
+                            if (sEntry.Kind == "album" && (sEntry.ProductionYear == null || sEntry.Genres == null || sEntry.Genres.Count == 0))
                             {
-                                await FetchAlbumTracksAsync(sEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                                _ = Task.Run(async () =>
+                                {
+                                    try { await FetchAlbumTracksAsync(sEntry, CancellationToken.None).ConfigureAwait(false); } catch { }
+                                });
                             }
-                            BaseItemDto dto = sEntry.Kind switch
+
+                            bool isFav = (idUserId != Guid.Empty) && _favoritesTracker.IsFavorite(idUserId, sId);
+                            matchingItems.Add(sEntry.Kind switch
                             {
-                                "artist" => ResonoSearchActionFilter.BuildArtistDto(sId, sEntry),
-                                "album" => ResonoSearchActionFilter.BuildAlbumDto(sId, sEntry),
+                                "artist" => ResonoSearchActionFilter.BuildArtistDto(sId, sEntry, isFav),
+                                "album" => ResonoSearchActionFilter.BuildAlbumDto(sId, sEntry, isFav),
                                 "playlist" => ResonoSearchActionFilter.BuildPlaylistDto(sId, sEntry),
-                                _ => ResonoSearchActionFilter.BuildTrackDto(sId, sEntry)
-                            };
-                            matchingItems.Add(dto);
+                                _ => ResonoSearchActionFilter.BuildTrackDto(sId, sEntry, isFav)
+                            });
                         }
                     }
                     if (matchingItems.Count > 0)
@@ -485,10 +638,23 @@ namespace Resono.Plugin.Filters
                             var tracks = await FetchAlbumTracksAsync(albumEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                             if (tracks != null && tracks.Count > 0)
                             {
+                                Guid albUserId = await ResolveUserIdAsync(req, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
+                                var userTracks = new List<BaseItemDto>(tracks.Count);
+                                foreach (var t in tracks)
+                                {
+                                    if (_cache.TryGet(t.Id, out var trEntry) && trEntry != null)
+                                    {
+                                        userTracks.Add(ResonoSearchActionFilter.BuildTrackDto(t.Id, trEntry, albUserId != Guid.Empty && _favoritesTracker.IsFavorite(albUserId, t.Id)));
+                                    }
+                                    else
+                                    {
+                                        userTracks.Add(t);
+                                    }
+                                }
                                 ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                                 {
-                                    Items = tracks.ToArray(),
-                                    TotalRecordCount = tracks.Count
+                                    Items = userTracks.ToArray(),
+                                    TotalRecordCount = userTracks.Count
                                 });
                                 return;
                             }
@@ -499,6 +665,32 @@ namespace Resono.Plugin.Filters
                 // (b) ParentId query (Albums, Artists, or Playlists)
                 if ((req.Query.TryGetValue("ParentId", out var pIdVal) || req.Query.TryGetValue("parentId", out pIdVal)) && Guid.TryParse(pIdVal.ToString(), out var parentId))
                 {
+                    Guid parentUserId = await ResolveUserIdAsync(req, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
+                    var userFavPlId = (parentUserId != Guid.Empty) ? ResonoItemCache.StubGuid("dz-user-favorites", parentUserId.ToString()) : Guid.Empty;
+
+                    if (userFavPlId != Guid.Empty && parentId == userFavPlId)
+                    {
+                        var favList = _favoritesTracker.GetFavorites(parentUserId);
+                        var favTracks = new List<BaseItemDto>();
+                        foreach (var fav in favList)
+                        {
+                            if (!_cache.TryGet(fav.ItemId, out var entry) || entry == null)
+                            {
+                                entry = await TryResolveItemFromGatewayAsync(fav.ItemId, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
+                            }
+                            if (entry != null && entry.Kind == "track")
+                            {
+                                favTracks.Add(ResonoSearchActionFilter.BuildTrackDto(fav.ItemId, entry, isFavorite: true));
+                            }
+                        }
+                        ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
+                        {
+                            Items = favTracks.ToArray(),
+                            TotalRecordCount = favTracks.Count
+                        });
+                        return;
+                    }
+
                     if (_cache.TryGet(parentId, out var parentEntry))
                     {
                         if (parentEntry is { Kind: "album" })
@@ -506,10 +698,22 @@ namespace Resono.Plugin.Filters
                             var tracks = await FetchAlbumTracksAsync(parentEntry, ctx.HttpContext.RequestAborted).ConfigureAwait(false);
                             if (tracks != null && tracks.Count > 0)
                             {
+                                var userTracks = new List<BaseItemDto>(tracks.Count);
+                                foreach (var t in tracks)
+                                {
+                                    if (_cache.TryGet(t.Id, out var trEntry) && trEntry != null)
+                                    {
+                                        userTracks.Add(ResonoSearchActionFilter.BuildTrackDto(t.Id, trEntry, parentUserId != Guid.Empty && _favoritesTracker.IsFavorite(parentUserId, t.Id)));
+                                    }
+                                    else
+                                    {
+                                        userTracks.Add(t);
+                                    }
+                                }
                                 ctx.Result = new OkObjectResult(new QueryResult<BaseItemDto>
                                 {
-                                    Items = tracks.ToArray(),
-                                    TotalRecordCount = tracks.Count
+                                    Items = userTracks.ToArray(),
+                                    TotalRecordCount = userTracks.Count
                                 });
                                 return;
                             }
@@ -639,13 +843,7 @@ namespace Resono.Plugin.Filters
                 var types = ResonoSearchActionFilter.ExtractIncludeItemTypes(ctx.HttpContext);
                 bool wantsAlbums = types.Contains("MusicAlbum") || types.Contains("Album");
 
-                Guid userId = Guid.Empty;
-                try
-                {
-                    var auth = _authContext.GetAuthorizationInfo(ctx.HttpContext.Request).GetAwaiter().GetResult();
-                    if (auth?.UserId != null && auth.UserId != Guid.Empty) userId = auth.UserId;
-                }
-                catch { }
+                Guid userId = await ResolveUserIdAsync(ctx.HttpContext.Request, ctx.RouteData.Values, _authContext, _sessionManager).ConfigureAwait(false);
 
                 if (latestOr.Value is BaseItemDto[] emptyArray && emptyArray.Length == 0)
                 {
@@ -1116,6 +1314,9 @@ namespace Resono.Plugin.Filters
         private static bool TryExtractSingleItemId(ActionExecutingContext ctx, out Guid id)
         {
             id = default;
+            if (!HttpMethods.IsGet(ctx.HttpContext.Request.Method))
+                return false;
+
             var route = ctx.RouteData.Values;
             var controller = route.TryGetValue("controller", out var c) ? c?.ToString() : null;
             if (!string.Equals(controller, "Items", StringComparison.OrdinalIgnoreCase)
@@ -1139,6 +1340,48 @@ namespace Resono.Plugin.Filters
                 return false;
 
             return true;
+        }
+
+        public static async Task<Guid> ResolveUserIdAsync(
+            HttpRequest req,
+            RouteValueDictionary? routeData,
+            IAuthorizationContext authContext,
+            MediaBrowser.Controller.Session.ISessionManager? sessionManager)
+        {
+            // 1. Check RouteData
+            if (routeData != null && routeData.TryGetValue("userId", out var rUid) && rUid != null && Guid.TryParse(rUid.ToString(), out var gUid))
+            {
+                return gUid;
+            }
+
+            // 2. Check Query String
+            if (req.Query.TryGetValue("userId", out var qUid) && Guid.TryParse(qUid.ToString(), out var gUid2))
+            {
+                return gUid2;
+            }
+
+            // 3. Check AuthContext asynchronously
+            try
+            {
+                var auth = await authContext.GetAuthorizationInfo(req).ConfigureAwait(false);
+                if (auth?.UserId != null && auth.UserId != Guid.Empty)
+                {
+                    return auth.UserId;
+                }
+            }
+            catch { }
+
+            // 4. Check HttpContext User Claims
+            if (req.HttpContext?.User?.Identity?.IsAuthenticated == true)
+            {
+                var claim = req.HttpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier);
+                if (claim != null && Guid.TryParse(claim.Value, out var claimUid))
+                {
+                    return claimUid;
+                }
+            }
+
+            return Guid.Empty;
         }
 
         private static bool TryExtractGuidListFromQuery(HttpRequest req, string key, out List<Guid> ids)

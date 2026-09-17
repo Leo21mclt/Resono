@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import logging
 import re
 import time
@@ -370,27 +371,45 @@ class CatalogManager:
         Generate unauthenticated, zero-contamination album recommendations based on seed artist names/IDs.
         If no seed artists or if fetching yields empty, falls back to live chart albums.
         """
+        cache_key = "rec:" + (",".join(sorted(s.lower().strip() for s in seed_artists[:4])) if seed_artists else "charts")
+        now = time.time()
+        if cache_key in self._cache:
+            exp, cached_res = self._cache[cache_key]
+            if now < exp:
+                return cached_res
+
         deezer = self.providers["deezer"]
         recommended_albums: list[CatalogAlbum] = []
         seen_album_titles: set[str] = set()
 
-        if seed_artists:
-            for artist_str in seed_artists[:4]:
+        if seed_artists and hasattr(deezer, "get_artist_related") and hasattr(deezer, "get_artist_albums"):
+            async def fetch_seed_related(artist_str: str) -> list[CatalogAlbum]:
+                seed_albums: list[CatalogAlbum] = []
                 try:
-                    if hasattr(deezer, "get_artist_related"):
-                        related = await deezer.get_artist_related(artist_str, limit=5)
-                        for rel in related[:3]:
-                            if hasattr(deezer, "get_artist_albums"):
-                                albs = await deezer.get_artist_albums(rel.id, limit=3)
-                                for a in albs:
-                                    norm = a.title.lower().strip()
-                                    if norm not in seen_album_titles:
-                                        seen_album_titles.add(norm)
-                                        recommended_albums.append(a)
-                                        if len(recommended_albums) >= limit:
-                                            return recommended_albums
+                    related = await deezer.get_artist_related(artist_str, limit=5)
+                    rel_tasks = [deezer.get_artist_albums(rel.id, name=rel.name, limit=3) for rel in related[:3]]
+                    rel_results = await asyncio.gather(*rel_tasks, return_exceptions=True)
+                    for rel, albs in zip(related[:3], rel_results):
+                        if isinstance(albs, list):
+                            for a in albs:
+                                if not a.artist_name and rel.name:
+                                    a.artist_name = rel.name
+                                seed_albums.append(a)
                 except Exception as e:
                     logger.debug(f"Recommendation fetch for {artist_str} error: {e}")
+                return seed_albums
+
+            seed_tasks = [fetch_seed_related(s) for s in seed_artists[:3]]
+            all_seed_results = await asyncio.gather(*seed_tasks, return_exceptions=True)
+            for s_albs in all_seed_results:
+                if isinstance(s_albs, list):
+                    for a in s_albs:
+                        norm = a.title.lower().strip()
+                        if norm not in seen_album_titles:
+                            seen_album_titles.add(norm)
+                            recommended_albums.append(a)
+                            if len(recommended_albums) >= limit:
+                                break
 
         # If we need more albums to reach limit, fill with live chart albums
         if len(recommended_albums) < limit:
@@ -403,6 +422,8 @@ class CatalogManager:
                     if len(recommended_albums) >= limit:
                         break
 
+        if recommended_albums:
+            self._cache[cache_key] = (now + 1800, recommended_albums)
         return recommended_albums
 
 

@@ -18,6 +18,7 @@ namespace Resono.Plugin
             services.AddSingleton<ResonoItemCache>();
             services.AddSingleton<ResonoLibraryRegistrar>();
             services.AddSingleton<ResonoRecentlyPlayedTracker>();
+            services.AddSingleton<ResonoFavoritesTracker>();
             services.AddSingleton<IMediaSourceProvider, ResonoMediaSourceProvider>();
 
             services.Configure<MvcOptions>(opts =>
